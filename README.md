@@ -40,6 +40,16 @@ prof import csrankings --country Germany --country Switzerland
 # or everything: prof import csrankings        (≈30k rows, cached locally)
 ```
 
+Every professor is also tagged with a **research area** (one of 27 CSRankings areas in 4 groups: AI, Systems, Theory, Interdisciplinary), so you can import and browse by specialty:
+
+```bash
+prof areas                                              # list all areas + their conferences
+prof import csrankings --area security --area crypt     # specific areas
+prof import csrankings --area group:systems             # a whole group
+```
+
+See [docs/areas.md](docs/areas.md).
+
 Then edit `profile.toml` (your name, bio, research interests, timezone, venue tiers) and start scoring — see [docs/scoring.md](docs/scoring.md).
 
 ## What's in the box
@@ -48,6 +58,7 @@ Then edit `profile.toml` (your name, bio, research interests, timezone, venue ti
 |---|---|
 | `prof init [--demo]` | Create `./data/profdash.sqlite` + `profile.toml` in this directory |
 | `prof import csrankings` | Pull faculty from CSRankings (GitHub), map affiliations → countries |
+| `prof areas` | List the 27 research areas (4 groups) and the conferences behind each |
 | `prof serve` | Run the dashboard (FastAPI + HTMX, no build step) |
 | `prof digest <ids...>` | Fetch DBLP publication digests for scoring |
 | `prof apply judgment.json` | Apply one AI/human scoring judgment (validated, evidence-required) |

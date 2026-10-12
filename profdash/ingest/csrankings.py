@@ -12,7 +12,13 @@ queries work without extra resolution.
 
 Usage:
     prof import csrankings [--country "Germany" ...] [--region europe]
-                           [--limit N] [--refresh] [--db PATH]
+                           [--area ai --area security | --area systems]
+                           [--area-years N] [--limit N] [--refresh] [--db PATH]
+
+Research areas: generated-author-info.csv gives per-author, per-conference
+paper counts. They are rolled up into the 27 CSRankings areas (see
+profdash.areas); a professor's primary area is the one with the highest
+author-adjusted paper score over the last N years (default 10).
 """
 from __future__ import annotations
 
@@ -28,9 +34,14 @@ from pathlib import Path
 
 import httpx
 
+from .. import areas as areas_mod
+
 BASE_URL = "https://raw.githubusercontent.com/emeryberger/CSrankings/gh-pages"
 LETTER_FILES = [f"csrankings-{c}.csv" for c in "abcdefghijklmnopqrstuvwxyz"]
-NEEDED_FILES = LETTER_FILES + ["institutions.csv", "countries.csv", "dblp-aliases.csv"]
+AUTHOR_INFO_FILE = "generated-author-info.csv"
+NEEDED_FILES = LETTER_FILES + ["institutions.csv", "countries.csv", "dblp-aliases.csv",
+                               AUTHOR_INFO_FILE]
+DEFAULT_AREA_YEARS = 10
 
 # ISO alpha-2 -> country display name lives in countries.csv via alpha_2.
 REGION_NAMES = {
@@ -149,6 +160,62 @@ def load_datasets(cache: Path) -> tuple[dict[str, dict], dict[str, str], list[di
     return institutions, aliases, people
 
 
+def load_area_scores(cache: Path, *, years: int | None = DEFAULT_AREA_YEARS,
+                     this_year: int | None = None
+                     ) -> dict[tuple[str, str], dict[str, float]]:
+    """(name, affiliation) -> {area code: author-adjusted paper score}.
+
+    Only conferences CSRankings maps to an area are counted. `years` limits
+    the window to the most recent N years (None = all time).
+    """
+    fp = cache / AUTHOR_INFO_FILE
+    out: dict[tuple[str, str], dict[str, float]] = {}
+    if not fp.exists():
+        return out
+    min_year = None
+    if years:
+        min_year = (this_year or dt.date.today().year) - years + 1
+    with open(fp, newline="", encoding="utf-8", errors="replace") as f:
+        for row in csv.DictReader(f):
+            area = areas_mod.CONF_TO_AREA.get((row.get("area") or "").strip())
+            if area is None:
+                continue
+            try:
+                year = int(row["year"])
+                score = float(row["adjustedcount"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if min_year is not None and year < min_year:
+                continue
+            key = ((row.get("name") or "").strip(), (row.get("dept") or "").strip())
+            per = out.setdefault(key, {})
+            per[area] = per.get(area, 0.0) + score
+    return out
+
+
+def store_areas(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """Write professor_areas + primary area/group for every row with area data.
+
+    Area data is derived metadata (always refreshed), unlike scoring and
+    outreach columns which belong to the user.
+    """
+    n = 0
+    for r in rows:
+        scores = r.get("area_scores") or {}
+        if not scores:
+            continue
+        pid = _slug(r["name"], r["affiliation"])
+        conn.execute("DELETE FROM professor_areas WHERE professor_id=?", (pid,))
+        conn.executemany(
+            "INSERT INTO professor_areas(professor_id, area, score) VALUES (?,?,?)",
+            [(pid, code, round(v, 3)) for code, v in scores.items()])
+        prim = areas_mod.primary_area(scores)
+        conn.execute("UPDATE professors SET area=?, area_group=? WHERE id=?",
+                     (prim.title, prim.group, pid))
+        n += 1
+    return n
+
+
 def resolve_country(institutions: dict, countries: dict[str, str],
                     affiliation: str) -> tuple[str, str]:
     """-> (country_name, region_name)"""
@@ -218,6 +285,8 @@ def _dblp_search_url(name: str) -> str:
 def run_import(db_path: Path, cache_dir_arg: str | None = None, *,
                countries_filter: list[str] | None = None,
                regions_filter: list[str] | None = None,
+               areas_filter: list[str] | None = None,
+               area_years: int | None = DEFAULT_AREA_YEARS,
                limit: int | None = None, refresh: bool = False,
                log=print) -> dict:
     """Full import pass. Returns stats for CLI display."""
@@ -236,6 +305,9 @@ def run_import(db_path: Path, cache_dir_arg: str | None = None, *,
 
     want_countries = {c.lower() for c in (countries_filter or [])}
     want_regions = {r.lower() for r in (regions_filter or [])}
+    want_areas = {a.code for tok in (areas_filter or [])
+                  for a in areas_mod.resolve(tok)}
+    area_scores = load_area_scores(cache, years=area_years)
 
     enriched = []
     no_country = 0
@@ -245,9 +317,15 @@ def run_import(db_path: Path, cache_dir_arg: str | None = None, *,
             continue
         if want_regions and region.lower() not in want_regions:
             continue
+        scores = area_scores.get((p["name"], p["affiliation"]), {})
+        if want_areas:
+            prim = areas_mod.primary_area(scores)
+            if prim is None or prim.code not in want_areas:
+                continue
         if not country:
             no_country += 1
-        enriched.append({**p, "country": country, "region": region})
+        enriched.append({**p, "country": country, "region": region,
+                         "area_scores": scores})
 
     if limit:
         enriched = enriched[:limit]
@@ -258,6 +336,7 @@ def run_import(db_path: Path, cache_dir_arg: str | None = None, *,
     try:
         create_all(conn)
         stats = upsert_professors(conn, enriched, now=now, log=log)
+        stats["areas_assigned"] = store_areas(conn, enriched)
         conn.commit()
     finally:
         conn.close()

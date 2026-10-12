@@ -50,6 +50,23 @@ TZ_LABEL = _tz_label(_LOCAL_TZ)
 
 app = FastAPI(title="profdash")
 
+
+@app.on_event("startup")
+def _upgrade_schema() -> None:
+    """Databases from earlier versions get the research-area columns."""
+    import sqlite3
+    from ..schema import create_all
+    try:
+        path = db.db_path()
+        if path.exists():
+            conn = sqlite3.connect(str(path), timeout=10)
+            try:
+                create_all(conn)
+            finally:
+                conn.close()
+    except Exception:
+        pass  # surfaced later by the first query, with a clearer message
+
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 
@@ -311,6 +328,7 @@ def _professor_detail_ctx(professor_id: str) -> dict | None:
         "uni_ctx": db.retry_once_on_lock(
             db.get_professor_university_context, prof.get("university")),
         "draft": db.retry_once_on_lock(db.get_latest_email_draft, professor_id),
+        "areas": db.retry_once_on_lock(db.get_areas_for_professor, professor_id),
     }
 
 

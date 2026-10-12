@@ -37,9 +37,19 @@ def _normalize_rec_dashes(conn: sqlite3.Connection) -> None:
         )
 
 
+def _add_area_columns(conn: sqlite3.Connection) -> None:
+    """Research-area columns/tables arrived after v0.1.0."""
+    from .schema import DDL, ensure_columns
+    for stmt in DDL:
+        if "professor_areas" in stmt:
+            conn.execute(stmt)
+    ensure_columns(conn)
+
+
 STEPS = [
     ("legacy-status-rename", _legacy_status_rename),
     ("normalize-rec-dashes", _normalize_rec_dashes),
+    ("add-area-columns", _add_area_columns),
 ]
 
 

@@ -76,17 +76,38 @@ def cmd_demo(args):
 def cmd_import(args):
     db_path = _db_arg(args)
     from .ingest import csrankings
+    from . import areas
+    for tok in args.area or []:
+        try:
+            areas.resolve(tok)
+        except ValueError as e:
+            raise SystemExit(f"error: {e}")
     stats = csrankings.run_import(
         db_path,
         countries_filter=args.country or None,
         regions_filter=args.region or None,
+        areas_filter=args.area or None,
+        area_years=args.area_years or None,
         limit=args.limit,
         refresh=args.refresh,
         log=print,
     )
     print(f"\nImported: {stats['total_rows']} rows "
           f"({stats['inserted']} new, {stats['updated']} refreshed)")
+    print(f"Research area assigned to {stats['areas_assigned']} professors")
     print(f"Dataset cache: {stats['cache']}")
+
+
+def cmd_areas(args):
+    from . import areas
+    for group in areas.GROUPS:
+        print(f"\n{group}")
+        for a in areas.areas_in_group(group):
+            confs = ", ".join(c.upper() for c in a.confs)
+            if a.next_tier:
+                confs += " (+ " + ", ".join(c.upper() for c in a.next_tier) + ")"
+            print(f"  {a.code:<14} {a.title:<14} {confs}")
+    print("\nUse with: prof import csrankings --area <code|name|group> ...")
 
 
 def cmd_serve(args):
@@ -244,10 +265,21 @@ def build_parser() -> argparse.ArgumentParser:
                       help='filter by country name, e.g. --country "South Korea" (repeatable)')
     p_cs.add_argument("--region", action="append",
                       help="filter by region: europe|asia|northamerica|... (repeatable)")
+    p_cs.add_argument("--area", action="append",
+                      help="keep only professors whose primary area matches: an area code/name "
+                           "(vision, sec, 'Comp. Bio', ...) or a group "
+                           "(group:ai|systems|theory|interdisciplinary); repeatable. "
+                           "See `prof areas`")
+    p_cs.add_argument("--area-years", type=int, default=10,
+                      help="years of publications used to pick the primary area "
+                           "(default 10; 0 = all time)")
     p_cs.add_argument("--limit", type=int, help="cap imported rows (testing)")
     p_cs.add_argument("--refresh", action="store_true", help="re-download dataset files")
     p_cs.add_argument("--db", help="path to profdash.sqlite")
     p_cs.set_defaults(fn=cmd_import)
+
+    p_areas = sub.add_parser("areas", help="list the CS research areas and their conferences")
+    p_areas.set_defaults(fn=cmd_areas)
 
     p_serve = sub.add_parser("serve", help="run the dashboard")
     p_serve.add_argument("--host", default="127.0.0.1")

@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import sqlite3
 
+from . import areas as areas_mod
 from .schema import create_all
 
 # (name, university, country, tier, phd_rec, phd_score, status)
@@ -38,6 +39,22 @@ DEMO_PROFESSORS = [
     ("Dennis Ritchie", "Bell Labs Memorial University", "United States",
      "Moderate", "MEDIUM FIT", 6, "contacted"),
 ]
+
+# professor name -> {area code: paper score}; first-listed is the primary area
+DEMO_AREAS = {
+    "Ada Lovelace": {"act": 9.0, "log": 2.5},
+    "Grace Hopper": {"plan": 7.5, "soft": 3.0},
+    "Edsger Dijkstra": {"act": 6.0, "plan": 4.0},
+    "Donald Knuth": {"act": 12.0},
+    "Barbara Liskov": {"ops": 8.0, "plan": 5.0},
+    "John Backus": {"plan": 4.0},
+    "Jean Bartik": {"arch": 5.0, "hpc": 2.0},
+    "Alan Turing": {"ai": 6.0, "log": 5.5, "crypt": 3.0},
+    "Radia Perlman": {"comm": 9.0, "sec": 2.0},
+    "Tim Berners-Lee": {"inforet": 7.0},
+    "Margaret Hamilton": {"soft": 8.0, "bed": 4.0},
+    "Dennis Ritchie": {"ops": 6.5, "sec": 1.5},
+}
 
 EVIDENCE = [
     ("research_fit", "Active at top theory venues in the last 3 years",
@@ -95,6 +112,15 @@ def seed_demo(db_path) -> dict:
                  "GOOD FIT" if score >= 6 else None,
                  max(0, score - 2) if score >= 6 else None,
                  "Demo masters note." if score >= 6 else None))
+            scores = DEMO_AREAS.get(name, {})
+            prim = areas_mod.primary_area(scores)
+            if prim:
+                conn.execute("UPDATE professors SET area=?, area_group=? WHERE id=?",
+                             (prim.title, prim.group, pid))
+                conn.execute("DELETE FROM professor_areas WHERE professor_id=?", (pid,))
+                conn.executemany(
+                    "INSERT INTO professor_areas(professor_id, area, score) VALUES (?,?,?)",
+                    [(pid, c, v) for c, v in scores.items()])
             # evidence + history + papers for a few
             if i % 3 == 0:
                 for field_name, claim, src_type, quote in EVIDENCE:

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from .. import paths
+from .. import areas, paths
 
 
 # Status taxonomy from PLAN.md
@@ -37,6 +37,7 @@ TABLE_COLUMNS: list[str] = [
     "professor",
     "university",
     "location_country",
+    "area",
     "fit_tier",
     "phd_recommendation",
     "final_score_phd",
@@ -50,6 +51,8 @@ COLUMN_LABELS: dict[str, str] = {
     "professor": "Name",
     "university": "University",
     "location_country": "Country",
+    "area": "Area",
+    "area_group": "Group",
     "fit_tier": "Tier",
     "phd_recommendation": "PhD Rec",
     "final_score_phd": "PhD Score",
@@ -65,11 +68,25 @@ COLUMN_LABELS: dict[str, str] = {
 # ID for stable ordering on ties.
 _SORTABLE_COLUMNS = set(TABLE_COLUMNS) | {"id"}
 
+
+def _order_by(sort: str, direction: str) -> str:
+    """ORDER BY clause. Sorting by area orders by group first (AI, Systems,
+    Theory, Interdisciplinary) then area; professors with no area go last."""
+    if sort == "area":
+        group_rank = ("CASE area_group "
+                      + " ".join(f"WHEN '{g}' THEN {i}" for i, g in enumerate(areas.GROUPS))
+                      + " ELSE 99 END")
+        return (f"area IS NULL, {group_rank} {direction}, area {direction}, "
+                f"professor ASC")
+    return f"{sort} {direction}"
+
 # Columns that can be filtered. These have discrete values worth filtering on.
 _FILTERABLE_COLUMNS: list[str] = [
     "phd_recommendation",
     "masters_recommendation",
     "location_country",
+    "area_group",
+    "area",
     "status",
     "fit_tier",
     "university",
@@ -264,6 +281,18 @@ def get_stats(search: str = "", filters: dict[str, str] | None = None,
             params,
         ).fetchone()[0]
 
+        # Breakdown by research area, ordered like areas.AREAS (group, then area)
+        area_rows = conn.execute(
+            f"SELECT area, area_group, COUNT(*) FROM professors {where_sql} "
+            f"{'AND' if where_sql else 'WHERE'} area IS NOT NULL GROUP BY area, area_group",
+            params,
+        ).fetchall()
+        order = {a.title: i for i, a in enumerate(areas.AREAS)}
+        area_breakdown = [
+            {"area": r[0], "group": r[1], "count": r[2]}
+            for r in sorted(area_rows, key=lambda r: order.get(r[0], 999))
+        ]
+
     return {
         "total": total,
         "status_breakdown": status_breakdown,
@@ -274,6 +303,7 @@ def get_stats(search: str = "", filters: dict[str, str] | None = None,
         "scored_masters": scored_masters,
         "contacted": contacted,
         "not_contacted": total - contacted,
+        "area_breakdown": area_breakdown,
     }
 
 
@@ -326,7 +356,7 @@ def list_professors(
             SELECT {select_cols}
             FROM professors
             {where_sql}
-            ORDER BY {sort} {direction}
+            ORDER BY {_order_by(sort, direction)}
             LIMIT ? OFFSET ?
         """
         params.extend([limit, offset])
@@ -422,6 +452,21 @@ def get_professor_by_id(professor_id: str) -> Optional[dict[str, Any]]:
         if row:
             return dict(row)
         return None
+
+
+def get_areas_for_professor(professor_id: str) -> list[dict[str, Any]]:
+    """Per-area paper scores for one professor, strongest first."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT area, score FROM professor_areas WHERE professor_id = ? "
+            "ORDER BY score DESC", (professor_id,)).fetchall()
+    out = []
+    for r in rows:
+        a = areas.BY_CODE.get(r["area"])
+        if a:
+            out.append({"code": a.code, "title": a.title, "group": a.group,
+                        "score": r["score"]})
+    return out
 
 
 def get_evidence_for_professor(professor_id: str) -> list[dict[str, Any]]:

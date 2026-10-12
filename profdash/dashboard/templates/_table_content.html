@@ -1,6 +1,6 @@
 {% from "_macros.html" import empty_state with context %}
 <div class="overflow-x-auto border border-line rounded-xl bg-surface shadow-sm">
-  <table class="w-full text-sm min-w-[64rem]">
+  <table class="w-full text-sm min-w-[72rem]">
     <thead>
       <tr class="text-left text-xs text-muted uppercase tracking-wide border-b border-line bg-surface2/50">
         <th class="px-2 sm:px-3 py-2 w-8">
@@ -9,7 +9,7 @@
                  :checked="$store.bulk.allOnPage"
                  @change="$store.bulk.togglePage(JSON.parse($el.closest('table').querySelector('tbody').dataset.pageIds), $event.target.checked)">
         </th>
-        {% for col in ['professor','university','location_country','fit_tier','phd_recommendation','final_score_phd','masters_recommendation','final_score_masters','status'] %}
+        {% for col in ['professor','university','location_country','area','fit_tier','phd_recommendation','final_score_phd','masters_recommendation','final_score_masters','status'] %}
         {% set ndir = 'desc' if (params.sort == col and params.direction == 'asc') else 'asc' %}
         <th class="px-3 py-2 whitespace-nowrap select-none">
           <a href="/professors?{{ qs(sort=col, direction=ndir, page=1) }}"

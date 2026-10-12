@@ -19,3 +19,19 @@
     {% endfor %}
   </div>
 </div>
+{% if stats.area_breakdown %}
+<div class="flex flex-wrap items-center gap-1.5 mt-2 text-xs">
+  <span class="text-muted">Areas</span>
+  {% for a in stats.area_breakdown %}
+    <a href="/professors?{{ qs(area=a.area, area_group='', page=1) }}"
+       hx-get="/table-rows?{{ qs(area=a.area, area_group='', page=1) }}"
+       hx-target="#table-region" hx-swap="outerHTML"
+       hx-push-url="/professors?{{ qs(area=a.area, area_group='', page=1) }}"
+       title="{{ a.group }}"
+       class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-line hover:border-accent/60
+              {{ 'border-accent/60 text-accent' if params.filters.get('area') == a.area }}">
+      {{ a.area }}&nbsp;<b class="tabular-nums">{{ a.count }}</b>
+    </a>
+  {% endfor %}
+</div>
+{% endif %}

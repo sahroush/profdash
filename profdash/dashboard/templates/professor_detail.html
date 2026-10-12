@@ -31,6 +31,14 @@
     CSRankings #{{ p.csrankings_rank }}{% if p.prestige_band and p.prestige_band != 'unknown' %} &middot; prestige {{ p.prestige_band }}{% endif %}
   </span>
   {{ status_badge(p.status) }}
+  {% for a in areas %}
+    <a href="/professors?area={{ a.title|urlencode }}"
+       title="{{ a.group }} &middot; {{ '%.1f'|format(a.score) }} adj. papers"
+       class="inline-flex items-center h-7 px-2.5 rounded-full text-xs border
+              {{ 'border-accent/60 bg-accent/10 text-accent font-medium' if loop.first else 'border-line bg-surface text-muted' }}">
+      {{ a.title }}
+    </a>
+  {% endfor %}
 </div>
 
 <div class="grid lg:grid-cols-3 gap-4">

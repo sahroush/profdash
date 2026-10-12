@@ -12,6 +12,9 @@
   <td class="px-3 py-2 text-muted max-w-[16rem]"><span class="truncate block">{{ r.university }}</span></td>
   <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">{{ r.location_country or '—' }}</td>
   <td class="px-3 py-2 text-xs whitespace-nowrap">
+    {% if r.area %}{{ r.area }}<span class="ml-1 text-[10px] text-muted">{{ r.area_group }}</span>{% else %}<span class="text-muted">—</span>{% endif %}
+  </td>
+  <td class="px-3 py-2 text-xs whitespace-nowrap">
     {{ r.fit_tier or '—' }}
     {% if r.stage and r.stage != 'deep_reviewed' %}
       <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium align-middle

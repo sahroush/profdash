@@ -31,6 +31,10 @@ DDL: list[str] = [
         csrankings_rank             INTEGER,
         prestige_band               TEXT,
 
+        -- research area (primary = highest CSRankings paper score)
+        area                        TEXT,
+        area_group                  TEXT,
+
         -- outreach tracker
         status                      TEXT DEFAULT 'not_contacted',
         last_contacted_at           TEXT,
@@ -62,6 +66,15 @@ DDL: list[str] = [
         last_csv_sync_at            TEXT,
         exclusion_reason            TEXT,
         funding_confidence          TEXT
+    )
+    """,
+    # --- research areas: per-professor paper score per CSRankings area -----
+    """
+    CREATE TABLE IF NOT EXISTS professor_areas (
+        professor_id  TEXT NOT NULL,
+        area          TEXT NOT NULL,
+        score         REAL NOT NULL,
+        PRIMARY KEY (professor_id, area)
     )
     """,
     # --- outreach history --------------------------------------------------
@@ -227,6 +240,7 @@ DDL: list[str] = [
 INDEXES: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_professors_status ON professors(status)",
     "CREATE INDEX IF NOT EXISTS idx_professors_stage ON professors(stage)",
+    "CREATE INDEX IF NOT EXISTS idx_professor_areas_area ON professor_areas(area)",
     "CREATE INDEX IF NOT EXISTS idx_status_history_prof ON status_history(professor_id)",
     """CREATE INDEX IF NOT EXISTS idx_status_history_gmail_msg_id
        ON status_history(gmail_message_id) WHERE gmail_message_id IS NOT NULL""",
@@ -245,11 +259,39 @@ INDEXES: list[str] = [
 ]
 
 
+# Columns added after v0.1.0: (table, column, type). Databases created by
+# earlier versions get them via ensure_columns().
+ADDED_COLUMNS: list[tuple[str, str, str]] = [
+    ("professors", "area", "TEXT"),
+    ("professors", "area_group", "TEXT"),
+]
+
+# Indexes on ADDED_COLUMNS; created only after ensure_columns() has run.
+ADDED_INDEXES: list[str] = [
+    "CREATE INDEX IF NOT EXISTS idx_professors_area ON professors(area)",
+    "CREATE INDEX IF NOT EXISTS idx_professors_area_group ON professors(area_group)",
+]
+
+
+def ensure_columns(conn: sqlite3.Connection) -> list[str]:
+    """Add any ADDED_COLUMNS missing from an older database. Idempotent."""
+    added = []
+    for table, column, coltype in ADDED_COLUMNS:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if cols and column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+            added.append(f"{table}.{column}")
+    for stmt in ADDED_INDEXES:
+        conn.execute(stmt)
+    return added
+
+
 def create_all(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation. Safe to run repeatedly."""
     conn.execute("PRAGMA journal_mode=WAL")
     for stmt in DDL:
         conn.execute(stmt)
+    ensure_columns(conn)
     for stmt in INDEXES:
         conn.execute(stmt)
     conn.commit()
