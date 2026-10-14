@@ -44,7 +44,8 @@
   <input type="search" name="search" value="{{ params.search }}" placeholder="Search name or university&hellip;" autocomplete="off"
          class="w-full sm:w-56 h-9 px-3 rounded-lg bg-surface border border-line text-sm placeholder-muted
                 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
-         hx-trigger="input changed delay:300ms, search" hx-replace-url="{{ '/professors?' ~ qs(page=params.page) }}">
+         hx-get="/table-rows" hx-target="#table-region" hx-swap="outerHTML" hx-include="closest form"
+         hx-trigger="input changed delay:300ms, search" hx-replace-url="{{ '/professors?' ~ qs(page=1) }}">
 
   {% set sel_defs = [
     ('status', 'All statuses', options.get('status', []), 'status'),
@@ -56,7 +57,7 @@
   ] %}
   {% set sel_classes = 'h-9 px-2 rounded-lg bg-surface border border-line text-sm max-w-[13rem]
                         hover:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/40' %}
-  {% set sel_attrs = 'hx-trigger="change" hx-include="closest form" hx-push-url="' ~ ('/professors?' ~ qs(page=params.page)) ~ '"' %}
+  {% set sel_attrs = 'hx-get="/table-rows" hx-target="#table-region" hx-swap="outerHTML" hx-trigger="change" hx-include="closest form" hx-push-url="' ~ ('/professors?' ~ qs(page=1)) ~ '"' %}
   {% for name, label, values, label_map in sel_defs %}
     <select name="{{ name }}" aria-label="{{ label }}" class="{{ sel_classes }}" {{ sel_attrs|safe }}>
       <option value="">{{ label }}</option>
@@ -79,9 +80,9 @@
     <a href="/professors" class="text-sm text-muted hover:text-ink underline underline-offset-2">Clear</a>
   {% endif %}
 
-  <button type="button"
-          class="h-9 px-4 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent/90 transition-colors"
-          hx-include="closest form">
+  <button type="submit"
+          hx-get="/table-rows" hx-target="#table-region" hx-swap="outerHTML" hx-include="closest form"
+          class="h-9 px-4 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent/90 transition-colors">
     Apply
   </button>
 </form>
