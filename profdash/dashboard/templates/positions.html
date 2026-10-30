@@ -3,10 +3,10 @@
 {% set sel_classes = 'h-8 px-2 rounded-lg bg-surface border border-line text-xs max-w-[13rem]
                       hover:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/40' %}
 
-{% block title %}Positions — profdash{% endblock %}
+{% block title %}Positions — Professor Dashboard{% endblock %}
 
 {% block content %}
-{{ page_header("Positions", total ~ " position(s) from mailing lists & digests") }}
+{{ page_header("Positions", total ~ " position(s) from mailing lists &amp; digests") }}
 
 <form method="get" action="/positions" class="flex flex-wrap items-center gap-2 mb-4">
   <input type="search" name="search" value="{{ qp.get('search', '') }}" placeholder="Search title / institution / professor&hellip;" autocomplete="off"

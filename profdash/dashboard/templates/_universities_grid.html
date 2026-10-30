@@ -28,11 +28,22 @@
 </div>
 
 {% if groups %}
+{% set favs = get_favorite_universities() %}
+{% set uni_tiers = get_university_tiers() %}
 <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
   {% for g in groups %}
   <a href="/university/{{ g.normalized_name|urlencode }}"
-     class="block bg-surface border border-line rounded-xl p-4 shadow-sm hover:border-accent/50 transition-colors">
-    <div class="font-medium truncate" title="{{ g.display_name }}">{{ g.display_name }}</div>
+     class="block bg-surface border border-line rounded-xl p-4 shadow-sm hover:border-accent/50 transition-colors relative
+            {{ 'border-amber-400/50' if g.normalized_name in favs }}">
+    {% if g.normalized_name in favs %}
+      <span class="absolute top-2 right-3 text-amber-500 dark:text-amber-400 text-sm" title="Favorited">★</span>
+    {% endif %}
+    {% if g.normalized_name in uni_tiers %}
+      {% set ts = TIER_STYLES[uni_tiers[g.normalized_name]] %}
+      <span class="absolute top-2 right-11 inline-flex items-center justify-center h-5 w-5 rounded {{ ts[0] }} {{ ts[1] }} {{ ts[2] }} {{ ts[3] }} text-xs font-bold"
+            title="Tier {{ uni_tiers[g.normalized_name] }}">{{ uni_tiers[g.normalized_name] }}</span>
+    {% endif %}
+    <div class="font-medium truncate pr-4" title="{{ g.display_name }}">{{ g.display_name }}</div>
     <div class="text-xs text-muted mt-0.5">{{ g.country or 'Unknown country' }}</div>
     <div class="flex items-center justify-between mt-3 text-xs">
       <span><b>{{ g.total_professors }}</b> <span class="text-muted">professors</span></span>

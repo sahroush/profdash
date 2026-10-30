@@ -1,0 +1,200 @@
+{% from "_macros.html" import app_status_badge with context %}
+{% set _EV_COLORS = {
+  'opens': 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300',
+  'closes': 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300',
+  'deadline': 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300',
+  'interview': 'bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-300',
+  'decision': 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300',
+  'results': 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300',
+  'scholarship': 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300',
+  'recommendation_letters': 'bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300',
+  'documents': 'bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300',
+  'exam': 'bg-fuchsia-100 dark:bg-fuchsia-900/40 text-fuchsia-700 dark:text-fuchsia-300',
+  'other': 'bg-surface2 text-muted'
+} %}
+{% set inp = 'h-8 px-2 rounded-lg bg-surface border border-line text-xs
+              hover:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/40' %}
+<tbody x-data>
+  <tr id="app-row-{{ a.id }}"
+      class="border-b border-line hover:bg-surface2/50 align-top
+             {{ 'opacity-60' if a.status in ('rejected', 'withdrawn', 'not_interested') }}">
+    <td class="px-4 py-2.5 max-w-[24rem]">
+      <button @click="$store.appOpen.toggle('{{ a.id }}')"
+              class="inline-flex items-center justify-center w-5 h-5 mr-1 rounded text-muted hover:text-ink align-middle"
+              :class="$store.appOpen.has('{{ a.id }}') &amp;&amp; 'rotate-90'"
+              :aria-expanded="$store.appOpen.has('{{ a.id }}')"
+              aria-label="Toggle details">
+        <span class="inline-block transition-transform">&#9656;</span>
+      </button>
+      {% if a.url %}
+        <a href="{{ a.url }}" target="_blank" rel="noopener" class="font-medium hover:text-accent">{{ a.name }}</a>
+      {% else %}
+        <span class="font-medium">{{ a.name }}</span>
+      {% endif %}
+      {% if a.notes %}
+        <div class="text-xs text-muted mt-0.5 truncate max-w-[22rem]" title="{{ a.notes }}">{{ a.notes }}</div>
+      {% endif %}
+    </td>
+{% set TRACK_LABELS = {'masters': 'MS', 'phd': 'PhD', 'masters_to_phd': 'MS-PhD', 'both': 'MS/PhD'} %}
+    <td class="px-4 py-2.5 whitespace-nowrap">
+      {% if a.program_track %}
+        <span class="text-xs px-2 py-0.5 rounded-full bg-surface2 border border-line">{{ TRACK_LABELS.get(a.program_track, a.program_track) }}</span>
+      {% else %}
+        <span class="text-muted">&mdash;</span>
+      {% endif %}
+    </td>
+    <td class="px-4 py-2.5 whitespace-nowrap text-xs">
+      {% if a.semester %}
+        <span class="text-muted">{{ a.semester }}</span>
+      {% else %}
+        <span class="text-muted">&mdash;</span>
+      {% endif %}
+    </td>
+    <td class="px-4 py-2.5">
+      {% if a.professors %}
+        <div class="flex flex-wrap gap-1">
+          {% for pr in a.professors %}
+            <a href="/professor/{{ pr.id }}"
+               class="text-xs px-2 py-0.5 rounded-full bg-surface2 border border-line hover:border-accent/60">{{ pr.professor }}</a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <span class="text-muted">&mdash;</span>
+      {% endif %}
+    </td>
+    <td class="px-4 py-2.5 whitespace-nowrap text-xs tabular-nums">
+      {% if a.next_event %}
+        <span class="px-1.5 py-0.5 rounded-full {{ _EV_COLORS.get(a.next_event.event_type, 'bg-surface2 text-muted') }}">{{ a.next_event.event_type }}</span>
+        {{ a.next_event.event_date }}
+        {% set dd = a.next_event.event_date|days_until %}
+        {% if dd is not none and dd >= 0 %}
+          <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded-full font-medium
+            {{ 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300' if dd <= 14
+               else 'bg-surface2 text-muted' }}">{{ dd }}d</span>
+        {% endif %}
+        <div class="text-muted mt-0.5">{{ a.events|length }} event{{ 's' if a.events|length != 1 }}</div>
+      {% else %}
+        <span class="text-muted">&mdash;</span>
+      {% endif %}
+    </td>
+    <td class="px-4 py-2.5">
+      <select name="application_status" aria-label="Application status"
+              class="max-w-[11rem] text-xs rounded-md border border-line bg-surface px-1.5 py-1
+                     hover:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/40"
+              hx-post="/applications/{{ a.id }}/status" hx-target="closest tbody" hx-swap="outerHTML">
+        {% for s in APPLICATION_STATUS_TAXONOMY %}
+          <option value="{{ s }}" {{ 'selected' if a.status == s }}>{{ APPLICATION_STATUS_LABELS.get(s, s) }}</option>
+        {% endfor %}
+      </select>
+    </td>
+  </tr>
+  <tr x-show="$store.appOpen.has('{{ a.id }}')" x-cloak class="border-b border-line bg-surface2/30">
+    <td colspan="6" class="px-6 py-4">
+      <div class="grid gap-6 lg:grid-cols-3">
+
+        <div x-data="{
+               program: '{{ a.program_id or '' }}',
+               semester: '{{ a.semester or '' }}',
+               semesters: [],
+               autofill: null,
+               async loadSemesters() {
+                 if (!this.program) { this.semesters = []; return; }
+                 const r = await fetch(`/applications/program-semesters?program_id=${encodeURIComponent(this.program)}`);
+                 this.semesters = (await r.json()).semesters || [];
+               },
+               async loadAutofill() {
+                 const u = new URL('/applications/program-autofill', location.origin);
+                 u.searchParams.set('program_id', this.program);
+                 if (this.semester) u.searchParams.set('semester', this.semester);
+                 const r = await fetch(u);
+                 this.autofill = r.ok ? await r.json() : null;
+               }
+             }" x-init="loadSemesters()">
+          <h4 class="text-xs uppercase tracking-wide text-muted mb-2">Details</h4>
+          <form method="post" action="/applications/{{ a.id }}/update" class="space-y-2">
+            <input name="name" value="{{ a.name }}" required placeholder="Name" class="w-full {{ inp }}">
+            <select name="program_id" x-model="program" @change="semester=''; loadSemesters()" class="w-full {{ inp }}">
+              <option value="">No program match</option>
+              {% for pr in program_options %}
+                <option value="{{ pr.id }}" {{ 'selected' if a.program_id == pr.id }}>{{ pr.university }} &mdash; {{ pr.program_name }} ({{ pr.track }})</option>
+              {% endfor %}
+            </select>
+            <select name="semester" x-model="semester" @change="loadAutofill()" class="w-full {{ inp }}">
+              <option value="">No semester</option>
+              <template x-for="s in semesters" :key="s.cycle_label">
+                <option :value="s.cycle_label" x-text="s.cycle_label" :selected="semester === s.cycle_label"></option>
+              </template>
+            </select>
+            <input name="url" value="{{ a.url or '' }}" placeholder="Application URL" class="w-full {{ inp }}">
+            <textarea name="notes" rows="2" placeholder="Notes" class="w-full {{ inp }}">{{ a.notes or '' }}</textarea>
+            <button class="h-8 px-3 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent/90">Save</button>
+            <p class="text-xs text-muted">Saving with program + semester re-imports its open/close events (duplicates skipped).</p>
+          </form>
+          <form method="post" action="/applications/{{ a.id }}/delete" class="mt-3"
+                onsubmit="return confirm('Delete this application and all its events?')">
+            <button class="text-xs text-red-600 dark:text-red-400 hover:underline">Delete application</button>
+          </form>
+        </div>
+
+        <div>
+          <h4 class="text-xs uppercase tracking-wide text-muted mb-2">Related professors</h4>
+          {% if a.professors %}
+            <div class="flex flex-wrap gap-1 mb-2">
+              {% for pr in a.professors %}
+                <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-surface2 border border-line">
+                  <a href="/professor/{{ pr.id }}" class="hover:text-accent">{{ pr.professor }}</a>
+                  <form method="post" action="/applications/{{ a.id }}/professors/{{ pr.id }}/remove" class="inline">
+                    <button class="text-muted hover:text-red-500" aria-label="Remove {{ pr.professor }}">&times;</button>
+                  </form>
+                </span>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="text-xs text-muted mb-2">None linked yet.</p>
+          {% endif %}
+          <form method="post" action="/applications/{{ a.id }}/professors/add" class="flex gap-1"
+                x-data="{ q: '', opts: [] }">
+            <input name="professor_id" list="prof-options-{{ a.id }}" placeholder="Add professor&hellip;" required
+                   class="w-44 {{ inp }}" x-model="q"
+                   @input.debounce.300ms="if (q.length >= 2) { const r = await fetch(`/applications/prof-search?q=${encodeURIComponent(q)}`); opts = (await r.json()).profs || []; }">
+            <datalist id="prof-options-{{ a.id }}">
+              <template x-for="p in opts" :key="p.id">
+                <option :value="p.id" x-text="p.professor + ' — ' + p.university"></option>
+              </template>
+            </datalist>
+            <button class="h-8 px-2 rounded-lg border border-line text-xs hover:border-accent/60">Add</button>
+          </form>
+        </div>
+
+        <div>
+          <h4 class="text-xs uppercase tracking-wide text-muted mb-2">Events</h4>
+          <ul class="space-y-1 text-sm">
+            {% for e in a.events %}
+              <li class="flex items-center gap-2">
+                <span class="px-1.5 py-0.5 rounded-full text-xs {{ _EV_COLORS.get(e.event_type, 'bg-surface2 text-muted') }}">{{ e.event_type }}</span>
+                <span class="tabular-nums text-xs">{{ e.event_date or '&mdash;' }}</span>
+                {% if e.note %}
+                  <span class="text-xs text-muted truncate max-w-[10rem]" title="{{ e.note }}">{{ e.note }}</span>
+                {% endif %}
+                <form method="post" action="/applications/{{ a.id }}/events/{{ e.id }}/delete" class="ml-auto">
+                  <button class="text-muted hover:text-red-500 text-xs" aria-label="Delete event">&times;</button>
+                </form>
+              </li>
+            {% else %}
+              <li class="text-xs text-muted">No events yet.</li>
+            {% endfor %}
+          </ul>
+          <form method="post" action="/applications/{{ a.id }}/events" class="mt-2 flex flex-wrap gap-1">
+            <select name="event_type" class="{{ inp }}">
+              {% for t in APPLICATION_EVENT_TYPES %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+            </select>
+            <input type="date" name="event_date" required class="{{ inp }}">
+            <input name="note" placeholder="Note" class="w-28 {{ inp }}">
+            <button class="h-8 px-2 rounded-lg border border-line text-xs hover:border-accent/60">Add</button>
+          </form>
+        </div>
+
+      </div>
+    </td>
+  </tr>
+</tbody>

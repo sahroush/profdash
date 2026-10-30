@@ -28,13 +28,21 @@
            class="rounded border-line text-accent focus:ring-accent/50">
     include past
   </label>
+  <label class="inline-flex items-center gap-1.5 text-xs cursor-pointer select-none
+                {{ 'text-amber-600 dark:text-amber-400' if qp.get('favorites') == '1' else 'text-muted' }}">
+    <input type="checkbox" name="favorites" value="1" {{ 'checked' if qp.get('favorites') == '1' }}
+           class="rounded border-line text-amber-500 focus:ring-amber-400/50">
+    &#9733; starred only
+  </label>
   <button type="submit" class="h-8 px-3 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent/90">Apply</button>
+  {% if qp.get('favorites') == '1' %}<a href="/deadlines" class="text-xs text-muted hover:text-ink underline underline-offset-2">Clear</a>{% endif %}
 </div>
 
 <div class="overflow-x-auto border border-line rounded-xl bg-surface shadow-sm">
   <table class="w-full text-sm min-w-[52rem]">
     <thead>
       <tr class="text-left text-xs text-muted uppercase tracking-wide border-b border-line bg-surface2/50">
+        <th class="px-4 py-2 whitespace-nowrap"><span class="text-amber-500 normal-case">★</span></th>
         <th class="px-4 py-2 whitespace-nowrap">Date</th>
         <th class="px-4 py-2">University</th>
         <th class="px-4 py-2 hidden md:table-cell">Track</th>
@@ -48,6 +56,9 @@
       {% set dd = d.deadline_date|days_until %}
       <tr class="border-b border-line hover:bg-surface2/50
                  {{ 'opacity-60' if dd is not none and dd < 0 }}">
+        <td class="px-4 py-2 whitespace-nowrap">
+          {% if d.is_favorite %}<span class="text-amber-500 dark:text-amber-400" title="Favorited university">★</span>{% endif %}
+        </td>
         <td class="px-4 py-2 whitespace-nowrap">
           <span class="tabular-nums">{{ d.deadline_date }}</span>
           {% if dd is not none and dd >= 0 %}

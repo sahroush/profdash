@@ -1,10 +1,10 @@
 {% extends "_base.html" %}
 {% from "_macros.html" import page_header, stat_tile, card, status_badge, rec_badge, empty_state with context %}
 
-{% block title %}Mission Control — profdash{% endblock %}
+{% block title %}Mission Control — Professor Dashboard{% endblock %}
 
 {% block content %}
-{{ page_header("Mission Control", "Pipeline overview · " ~ today) }}
+{{ page_header("Mission Control", "Pipeline overview &middot; " ~ today) }}
 
 <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
   {{ stat_tile("Professors", stats.total, stats.stage_breakdown.get('deep_reviewed', 0) ~ " deep reviewed", "/professors") }}
@@ -29,7 +29,7 @@
           </div>
           <div class="flex items-center gap-2 shrink-0">
             {{ status_badge(c.status) }}
-            <span class="text-xs text-muted whitespace-nowrap">{{ c.at|localtz }}</span>
+            <span class="text-xs text-muted whitespace-nowrap">{{ c.at|tehran }}</span>
           </div>
         </li>
         {% endfor %}
@@ -40,7 +40,7 @@
     {% endif %}
   {% endcall %}
 
-  {% call card("Overdue Follow-ups", "contacted >21 days ago, still no reply") %}
+  {% call card("Overdue Follow-ups", "contacted &gt;21 days ago, still no reply") %}
     {% if followups %}
       <ul class="divide-y divide-line -m-4">
         {% for f in followups %}
@@ -61,7 +61,7 @@
     {% endif %}
   {% endcall %}
 
-  {% call card("Application Deadlines", "opens & closes only · soonest first") %}
+  {% call card("Application Deadlines", "opens &amp; closes only &middot; soonest first") %}
     {% if deadlines %}
       <ul class="divide-y divide-line -m-4">
         {% for d in deadlines %}
@@ -123,6 +123,7 @@
         </li>
         {% endfor %}
       </ul>
+      <a href="/open-applications" class="inline-block mt-3 text-sm text-accent hover:underline">View all open applications &rarr;</a>
     {% else %}
       {{ empty_state("No programs currently open", "Closing dates land here once windows start") }}
     {% endif %}
@@ -147,7 +148,7 @@
                  else 'text-muted' }}">
               <span class="w-1.5 h-1.5 rounded-full bg-current"></span>{{ t.status }}
             </span>
-            <span class="text-xs text-muted whitespace-nowrap">{{ t.requested_at|localtz }}</span>
+            <span class="text-xs text-muted whitespace-nowrap">{{ t.requested_at|tehran }}</span>
           </div>
         </li>
         {% endfor %}

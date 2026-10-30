@@ -19,7 +19,7 @@
       <ol class="space-y-2 max-h-64 overflow-y-auto pr-1">
         {% for h in history[:12] %}
         <li class="flex items-start gap-2 text-xs {{ 'opacity-60' if not h.confirmed }}">
-          <span class="text-muted whitespace-nowrap tabular-nums mt-0.5">{{ h.at|localtz }}</span>
+          <span class="text-muted whitespace-nowrap tabular-nums mt-0.5">{{ h.at|tehran }}</span>
           <div class="min-w-0 flex-1">
             <span>{{ STATUS_LABELS.get(h.status, h.status) }}
               {%- if h.confirmed %}<span class="text-green-600 dark:text-green-400 ml-1" title="confirmed">&#10003;</span>{% endif -%}

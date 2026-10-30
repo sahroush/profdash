@@ -1,10 +1,10 @@
 {% extends "_base.html" %}
 {% from "_macros.html" import page_header, card, stat_tile with context %}
 
-{% block title %}Pipeline Stats — profdash{% endblock %}
+{% block title %}Pipeline Stats — Professor Dashboard{% endblock %}
 
 {% block content %}
-{{ page_header("Pipeline Stats", "Scoring funnel & workload overview") }}
+{{ page_header("Pipeline Stats", "Scoring funnel &amp; workload overview") }}
 
 <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
   {{ stat_tile("Professors", stats.total, "in pipeline", "/professors") }}

@@ -1,0 +1,36 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import page_header, card, stat_tile, empty_state with context %}
+
+{% block title %}Tier Board — Professor Dashboard{% endblock %}
+
+{% block content %}
+{% call page_header("Tier Board", "Application targets ranked: S top tier · A good · B safety net", back_href="/universities", back_label="All universities") %}
+  <a href="/universities"
+     class="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-line bg-surface text-xs text-muted hover:border-accent/60 hover:text-accent">
+    + Assign tiers on university pages
+  </a>
+{% endcall %}
+
+<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+  {% for t in ['S', 'A', 'B'] %}
+    {% set s = TIER_STYLES[t] %}
+    {% set pt = per_tier[t] %}
+    <a href="#tier-{{ t }}"
+       class="block bg-surface border border-line rounded-xl p-3 sm:p-4 shadow-sm hover:border-accent/50 transition-colors">
+      <div class="flex items-center gap-1.5">
+        <span class="inline-flex items-center justify-center h-5 w-5 rounded {{ s[0] }} {{ s[1] }} {{ s[2] }} {{ s[3] }} text-xs font-bold">{{ t }}</span>
+        <span class="text-xs text-muted">{{ s[4] }}</span>
+      </div>
+      <div class="text-2xl font-bold mt-1 tabular-nums">{{ pt.universities }}</div>
+      <div class="text-xs text-muted mt-1">{{ pt.contacted }} contacted &middot; {{ pt.applied }} applied</div>
+    </a>
+  {% endfor %}
+  <div class="bg-surface border border-line rounded-xl p-3 sm:p-4 shadow-sm">
+    <div class="text-xs text-muted uppercase tracking-wide">Total applied</div>
+    <div class="text-2xl font-bold mt-1 tabular-nums">{{ applied }}</div>
+    <div class="text-xs text-muted mt-1">{{ tiered }} universities tiered</div>
+  </div>
+</div>
+
+{% include "_tier_columns.html" %}
+{% endblock %}

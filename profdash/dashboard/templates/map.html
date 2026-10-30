@@ -1,0 +1,295 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import page_header, card, empty_state with context %}
+
+{% block title %}World Map — Professor Dashboard{% endblock %}
+
+{% block main_width %}max-w-none 2xl:max-w-[1800px]{% endblock %}
+
+{% block content %}
+{{ page_header("World Map", stats|length ~ " country/country-like value(s) in DB") }}
+
+<div class="flex flex-col lg:flex-row gap-4 items-stretch">
+  {# Map panel: dominant, full-width. SVG scales to container (preserveAspectRatio). #}
+  <div class="flex-1 min-w-0 bg-surface border border-line rounded-xl shadow-sm p-3 sm:p-4
+              flex flex-col self-start lg:self-stretch">
+    <div id="map-viewport" class="relative flex-1 min-h-[280px] overflow-hidden rounded-lg">
+      {% include "_world_map.html" %}
+
+      {# Zoom controls #}
+      <div class="absolute top-2 right-2 flex flex-col gap-1 z-10">
+        <button type="button" id="zoom-in" title="Zoom in"
+                class="w-8 h-8 rounded-lg bg-surface border border-line text-ink font-bold grid place-items-center hover:border-accent/60 hover:text-accent shadow-sm">+</button>
+        <button type="button" id="zoom-out" title="Zoom out"
+                class="w-8 h-8 rounded-lg bg-surface border border-line text-ink font-bold grid place-items-center hover:border-accent/60 hover:text-accent shadow-sm">&minus;</button>
+        <button type="button" id="zoom-reset" title="Reset view"
+                class="w-8 h-8 rounded-lg bg-surface border border-line text-muted grid place-items-center hover:border-accent/60 hover:text-accent shadow-sm text-xs">&#8634;</button>
+      </div>
+      {# Hidden-country name input #}
+      <div class="absolute bottom-2 right-2 z-10" x-data="{ open: false }">
+        <div x-show="!open">
+          <button type="button" @click="open = true"
+                  class="h-8 px-2.5 rounded-lg bg-surface border border-line text-xs text-muted hover:text-accent hover:border-accent/60 shadow-sm">
+            + Hide a country&hellip;
+          </button>
+        </div>
+        <form x-show="open" x-cloak @submit.prevent="open = false; hideCountry($refs.name.value)"
+              class="flex items-center gap-1 bg-surface border border-line rounded-lg p-1 shadow-md">
+          <input type="text" x-ref="name" x-effect="$nextTick(() => $refs.name.focus())" x-show="open"
+                 placeholder="Country name (e.g. France)"
+                 class="w-44 h-7 px-2 rounded-md bg-surface2 border border-line text-xs focus:outline-none focus:ring-2 focus:ring-accent/50"
+                 list="country-name-options">
+          <datalist id="country-name-options">
+            {% for t in all_titles %}<option value="{{ t }}"></option>{% endfor %}
+          </datalist>
+          <button type="submit" class="h-7 px-2 rounded-md bg-accent/15 text-accent text-xs font-medium hover:bg-accent/25">Hide</button>
+          <button type="button" @click="open = false" class="h-7 px-1.5 rounded-md text-muted hover:text-ink text-xs">&times;</button>
+        </form>
+      </div>
+    </div>
+    <script>
+      (function () {
+        var LINKS = {{ links|tojson }};
+        var HIDDEN_NAMES = {{ hidden_names|tojson }};
+        var TITLE_ALIASES = {{ title_aliases|tojson }};
+        var svg = document.getElementById("world-map");
+        if (!svg) return;
+
+        /* --- red painting: match DB hidden names to SVG <title>s via alias map --- */
+        var hiddenTitles = {};
+        HIDDEN_NAMES.forEach(function (n) {
+          (TITLE_ALIASES[n] || []).forEach(function (t) { hiddenTitles[t.toLowerCase()] = true; });
+          hiddenTitles[n.toLowerCase()] = true;
+        });
+        var RED = "rgb(127 45 55)";
+        svg.querySelectorAll("path.c").forEach(function (el) {
+          var t = el.querySelector("title");
+          if (t && hiddenTitles[t.textContent.trim().toLowerCase()]) {
+            el.style.fill = RED;
+            el.style.cursor = "default";
+          }
+        });
+
+        /* --- click + tooltip (skipped for hidden countries) --- */
+        var tip = document.createElement("div");
+        tip.className = "fixed pointer-events-none z-50 px-2 py-1 rounded-md text-xs bg-surface border border-line shadow-md text-ink";
+        tip.style.display = "none";
+        document.body.appendChild(tip);
+        Object.keys(LINKS).forEach(function (iso) {
+          var el = svg.getElementById ? svg.getElementById(iso) : document.getElementById(iso);
+          if (!el) return;
+          var t = el.querySelector("title");
+          if (t && hiddenTitles[t.textContent.trim().toLowerCase()]) return; // hidden: no link
+          var d = LINKS[iso];
+          el.classList.add("link");
+          if (d.fill) el.style.fill = d.fill;
+          el.addEventListener("click", function () { window.location.href = d.href; });
+          el.addEventListener("mousemove", function (e) {
+            tip.textContent = d.label + " — " + d.c + "/" + d.n + " contacted (" + d.pct + "%)";
+            tip.style.display = "block";
+            tip.style.left = (e.clientX + 12) + "px";
+            tip.style.top = (e.clientY + 12) + "px";
+          });
+          el.addEventListener("mouseleave", function () { tip.style.display = "none"; });
+        });
+
+        /* --- zoom & pan: camera always matches the LIVE container size ---
+           HOME (the pan extent) is recomputed from the container's current
+           aspect on every resize via ResizeObserver — never a stale value.
+           The camera viewBox keeps the container's aspect at every zoom
+           level, so the SVG letterboxes nothing and panned content can
+           reach all four edges of the box. */
+        var vb0 = svg.viewBox.baseVal; // x y w h
+        var CONTENT = { x: vb0.x, y: vb0.y, w: vb0.width, h: vb0.height };
+        var HOME = null;   // camera rect fitted to the live container
+        var vb = null;     // current camera
+        var MAX_ZOOM = 12, MIN_ZOOM = 1; // relative to HOME
+
+        function computeHome() {
+          var r = svg.getBoundingClientRect();
+          if (r.width < 10 || r.height < 10) return false;
+          var A = r.width / r.height;
+          // CONTAIN semantics: HOME is the smallest rect with the
+          // container's aspect that shows the WHOLE world. Zoom level 1
+          // always means "full map visible" — the user can zoom out to it
+          // from anywhere. (The viewport CSS keeps the container's aspect
+          // equal to the map content's, so HOME == CONTENT in practice.)
+          var hw, hh;
+          if (A >= CONTENT.w / CONTENT.h) { hh = CONTENT.h; hw = hh * A; }
+          else { hw = CONTENT.w; hh = hw / A; }
+          HOME = { x: CONTENT.x + (CONTENT.w - hw) / 2,
+                   y: CONTENT.y + (CONTENT.h - hh) / 2,
+                   w: hw, h: hh };
+          return true;
+        }
+        function clampVb() { // d3 translateExtent semantics, per axis:
+          if (!HOME) return; // camera smaller than content -> clamp inside;
+          vb.x = vb.w <= CONTENT.w // otherwise center on that axis (whole
+            ? Math.min(Math.max(vb.x, CONTENT.x), CONTENT.x + CONTENT.w - vb.w)
+            : CONTENT.x + (CONTENT.w - vb.w) / 2; // world stays in view)
+          vb.y = vb.h <= CONTENT.h
+            ? Math.min(Math.max(vb.y, CONTENT.y), CONTENT.y + CONTENT.h - vb.h)
+            : CONTENT.y + (CONTENT.h - vb.h) / 2;
+        }
+        function apply() {
+          svg.setAttribute("viewBox", vb.x + " " + vb.y + " " + vb.w + " " + vb.h);
+        }
+        function zoomAt(cx, cy, factor) { // cx, cy in svg user units
+          if (!HOME) return;
+          var nw = vb.w * factor;
+          nw = Math.min(HOME.w / MIN_ZOOM, Math.max(HOME.w / MAX_ZOOM, nw));
+          var k = nw / vb.w;
+          if (k === 1) return;
+          vb.x = cx - (cx - vb.x) * k;
+          vb.y = cy - (cy - vb.y) * k;
+          vb.w = nw;
+          vb.h = nw * (HOME.h / HOME.w); // keep camera aspect == container aspect
+          clampVb();
+          apply();
+        }
+        function resetView() {
+          if (!computeHome()) return;
+          vb = { x: HOME.x, y: HOME.y, w: HOME.w, h: HOME.h };
+          apply();
+        }
+        function clientToSvg(e) {
+          var r = svg.getBoundingClientRect();
+          var s = Math.min(r.width / vb.w, r.height / vb.h);
+          var ox = (r.width - vb.w * s) / 2, oy = (r.height - vb.h * s) / 2;
+          return {
+            x: vb.x + (e.clientX - r.left - ox) / s,
+            y: vb.y + (e.clientY - r.top - oy) / s
+          };
+        }
+        document.getElementById("zoom-in").addEventListener("click", function () {
+          var r = svg.getBoundingClientRect();
+          var c = clientToSvg({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+          zoomAt(c.x, c.y, 0.8);
+        });
+        document.getElementById("zoom-out").addEventListener("click", function () {
+          var r = svg.getBoundingClientRect();
+          var c = clientToSvg({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+          zoomAt(c.x, c.y, 1.25);
+        });
+        document.getElementById("zoom-reset").addEventListener("click", resetView);
+        var viewport = document.getElementById("map-viewport");
+        viewport.addEventListener("wheel", function (e) {
+          e.preventDefault();
+          var c = clientToSvg(e);
+          zoomAt(c.x, c.y, e.deltaY > 0 ? 1.18 : 1 / 1.18);
+        }, { passive: false });
+        // drag to pan
+        var drag = null;
+        viewport.addEventListener("pointerdown", function (e) {
+          if (e.button !== 0 || !vb) return;
+          // UI controls (zoom buttons, hide-country input) must keep their
+          // clicks: setPointerCapture on the viewport would retarget the
+          // click to the viewport and swallow the button's handler.
+          if (e.target.closest("button, input, form, a, select, label, datalist")) return;
+          drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y };
+          viewport.setPointerCapture(e.pointerId);
+        });
+        viewport.addEventListener("pointermove", function (e) {
+          if (!drag) return;
+          var r = svg.getBoundingClientRect();
+          var s = Math.min(r.width / vb.w, r.height / vb.h);
+          vb.x = drag.vx - (e.clientX - drag.x) / s;
+          vb.y = drag.vy - (e.clientY - drag.y) / s;
+          clampVb();
+          apply();
+        });
+        viewport.addEventListener("pointerup", function () { drag = null; });
+        viewport.addEventListener("pointercancel", function () { drag = null; });
+        // Recompute the fitted extent whenever the container changes size
+        // (full-bleed layout reflow, window resize). ResizeObserver also
+        // fires once on observe — so the initial fit happens after CSS has
+        // settled, not before. Current zoom level is preserved across resizes.
+        var ro = new ResizeObserver(function () {
+          if (!computeHome()) return;
+          if (!vb) {
+            vb = { x: HOME.x, y: HOME.y, w: HOME.w, h: HOME.h };
+          } else {
+            // Keep the current zoom level, but never below 1: a camera larger
+            // than HOME would extend outside the content and expose blank bands.
+            var zoom = Math.max(1, HOME.w / vb.w);
+            var cx = vb.x + vb.w / 2, cy = vb.y + vb.h / 2;
+            vb.w = HOME.w / zoom;
+            vb.h = vb.w * (HOME.h / HOME.w);
+            vb.x = cx - vb.w / 2;
+            vb.y = cy - vb.h / 2;
+          }
+          clampVb();
+          apply();
+        });
+        ro.observe(viewport);
+        resetView(); // fallback for the first frame
+        window.__mapDebug = { get home() { return HOME; }, get vb() { return vb; }, get content() { return CONTENT; } };
+      })();
+    </script>
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-xs text-muted">
+      <span class="inline-flex items-center gap-1.5">
+        <span class="w-3 h-3 rounded-sm inline-block" style="background:rgb(26 30 39);border:1px solid rgb(41 46 58)"></span> no data
+      </span>
+      <span class="inline-flex items-center gap-1.5">
+        <span class="w-3 h-3 rounded-sm inline-block" style="background:linear-gradient(90deg, rgb(96 165 250 / .35), rgb(96 165 250))"></span> contacted % of profs (darker = higher)
+      </span>
+      <span class="inline-flex items-center gap-1.5">
+        <span class="w-3 h-3 rounded-sm inline-block" style="background:rgb(127 45 55)"></span> hidden country
+      </span>
+      <span>Scroll = zoom &middot; drag = pan &middot; click a highlighted country to open it. Map: Natural Earth (public domain).</span>
+    </div>
+  </div>
+
+  {# Sidebar: fixed narrow column so the map gets the rest #}
+  <div class="lg:w-80 shrink-0 space-y-4">
+    {% call card("Top countries", "by professor count") %}
+      <ul class="space-y-1.5">
+        {% for s in stats[:12] %}
+        <li class="flex items-center justify-between gap-2 text-sm">
+          {% if s.href %}
+          <a href="{{ s.href }}" class="truncate hover:text-accent">{{ s.country }}</a>
+          {% else %}
+          <span class="truncate text-muted">{{ s.country }}</span>
+          {% endif %}
+          <span class="shrink-0 text-xs text-muted tabular-nums">{{ s.prof_count }}p &middot; {{ s.uni_count }}u &middot; {{ s.contacted }}c</span>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endcall %}
+
+    {% call card("Hidden countries", "red on map") %}
+      {% if hidden_names %}
+      <ul class="space-y-1.5">
+        {% for c in hidden_names %}
+        <li class="flex items-center justify-between gap-2 text-sm">
+          <span class="truncate text-muted">{{ c }}</span>
+          <button type="button" onclick="removeHiddenCountry('{{ c }}')"
+                  title="Stop hiding {{ c }}"
+                  class="shrink-0 text-xs px-2 py-0.5 rounded-full border border-line text-muted
+                         hover:border-red-400 hover:text-red-500 transition-colors">show</button>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-xs text-muted">None hidden. Use &ldquo;Hide a country&hellip;&rdquo; on the map.</p>
+      {% endif %}
+    {% endcall %}
+
+    {% if unmapped %}
+    {% call card("Not on map", "no geographic shape") %}
+      <ul class="space-y-1.5">
+        {% for s in unmapped %}
+        <li class="flex items-center justify-between gap-2 text-sm">
+          <a href="{{ s.href }}" class="truncate hover:text-accent">{{ s.country }}</a>
+          <span class="shrink-0 text-xs text-muted tabular-nums">{{ s.prof_count }}p &middot; {{ s.uni_count }}u</span>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endcall %}
+    {% endif %}
+  </div>
+</div>
+
+{% if show_hidden %}
+<p class="text-xs text-muted mt-3">Showing hidden countries too &middot; <a href="/map" class="text-accent hover:underline">hide them</a></p>
+{% endif %}
+{% endblock %}

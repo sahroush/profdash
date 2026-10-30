@@ -1,0 +1,119 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import page_header, card, stat_tile, rec_badge, score_chip, status_badge, empty_state with context %}
+
+{% block title %}{{ c.country }} — Professor Dashboard{% endblock %}
+
+{% block content %}
+{{ page_header(c.country, (c.professors|length ~ " professors · " ~ c.uni_count ~ " universities · " ~ c.programs|length ~ " program records") if (c.professors or c.programs) else "", back_href="/map", back_label="World map") }}
+
+<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+  {{ stat_tile("Professors", c.professors|length) }}
+  {{ stat_tile("Universities", c.uni_count) }}
+  {{ stat_tile("Program records", c.programs|length) }}
+  {% set contacted_n = c.professors|selectattr("status", "defined")|rejectattr("status", "in", ["not_contacted", "new", none])|list|length %}
+  {{ stat_tile("Contacted", contacted_n) }}
+</div>
+
+<div class="grid lg:grid-cols-3 gap-4">
+
+  <div class="lg:col-span-2 space-y-4">
+
+    {% call card("Visa & PR", "country-level research notes") %}
+      {% if info %}
+        <div class="space-y-3 text-sm">
+          {% if info.visa_summary %}
+          <p><span class="text-xs uppercase tracking-wide text-muted block">&#128675; Student visa</span>{{ info.visa_summary }}</p>
+          {% endif %}
+          {% if info.pr_path %}
+          <p><span class="text-xs uppercase tracking-wide text-muted block">&#127380; Post-study work &amp; PR pathway</span>{{ info.pr_path }}</p>
+          {% endif %}
+          {% if info.funding_landscape %}
+          <p><span class="text-xs uppercase tracking-wide text-muted block">&#128176; Funding landscape</span>{{ info.funding_landscape }}</p>
+          {% endif %}
+          {% if info.notes %}
+          <p><span class="text-xs uppercase tracking-wide text-muted block">Notes</span>{{ info.notes }}</p>
+          {% endif %}
+          {% if info.sources %}
+          <p class="text-xs text-muted">Sources:
+            {% for src in info.sources.replace('|', '\n').split('\n') if src.strip() %}
+              <a href="{{ src.strip() }}" target="_blank" rel="noopener" class="text-accent hover:underline">[{{ loop.index }}]</a>
+            {% endfor %}
+          </p>
+          {% endif %}
+          {% if info.updated_at %}<p class="text-xs text-muted/70">Updated {{ info.updated_at[:16].replace("T", " ") }}</p>{% endif %}
+        </div>
+      {% else %}
+        {{ empty_state("Country info not researched yet", "Visa/PR/funding notes get filled by research passes") }}
+      {% endif %}
+    {% endcall %}
+
+    {% call card("Universities", c.uni_count ~ " with program records") %}
+      {% if unis %}
+        <div class="space-y-2">
+          {% for uni_name, progs in unis.items() %}
+          {% set slug = uni_name|lower|urlencode %}
+          <div class="border border-line rounded-lg px-3 py-2" x-data="{ open: false }">
+            <button type="button" @click="open = !open" class="w-full flex items-center gap-3 text-left">
+              <a href="/university/{{ slug }}" class="font-medium hover:text-accent shrink-0" @click.stop>{{ uni_name }}</a>
+              <span class="text-xs text-muted flex-1 truncate">{{ progs[0].program_name or '' }}</span>
+              <span class="text-xs text-muted tabular-nums shrink-0">{{ progs|length }}p</span>
+              <span class="text-muted text-xs transition-transform shrink-0" :class="open && 'rotate-90'">&#9656;</span>
+            </button>
+            <div x-show="open" x-cloak class="mt-2 space-y-2 text-sm border-t border-line pt-2">
+              {% for prog in progs %}
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-medium capitalize">{{ prog.track or '&mdash;'|safe }}</span>
+                <span class="text-muted text-xs flex-1 min-w-[8rem]">{{ prog.program_name or '' }}</span>
+                {% if prog.funding_confidence %}<span class="text-xs px-2 py-0.5 rounded-full bg-surface2 text-muted">{{ prog.funding_confidence }}</span>{% endif %}
+              </div>
+              {% if prog.tuition_info %}<p class="text-xs text-muted"><span class="uppercase tracking-wide">Tuition:</span> {{ prog.tuition_info }}</p>{% endif %}
+              {% if prog.funding_info %}<p class="text-xs text-muted"><span class="uppercase tracking-wide">Funding:</span> {{ prog.funding_info }}</p>{% endif %}
+              {% if prog.english_requirements %}<p class="text-xs text-muted"><span class="uppercase tracking-wide">English:</span> {{ prog.english_requirements }}</p>{% endif %}
+              {% if prog.visa_notes %}<p class="text-xs text-muted"><span class="uppercase tracking-wide">&#128675; Visa:</span> {{ prog.visa_notes }}</p>{% endif %}
+              {% endfor %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        {{ empty_state("No university program records for this country") }}
+      {% endif %}
+    {% endcall %}
+
+  </div>
+
+  {% call card("Professors", "ranked by fit recommendation") %}
+    {% if c.professors %}
+      <div class="overflow-x-auto -m-4">
+        <table class="w-full text-sm min-w-[24rem]">
+          <thead>
+            <tr class="text-left text-xs text-muted uppercase tracking-wide border-b border-line bg-surface2/50">
+              <th class="px-4 py-2">Name</th>
+              <th class="px-4 py-2">PhD</th>
+              <th class="px-4 py-2 hidden md:table-cell">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in c.professors %}
+            <tr class="border-b border-line hover:bg-surface2/50">
+              <td class="px-4 py-2">
+                <a href="/professor/{{ p.id }}" class="font-medium hover:text-accent">{{ p.professor }}</a>
+                <span class="block text-xs text-muted truncate max-w-[14rem]">{{ p.university }}</span>
+              </td>
+              <td class="px-4 py-2">{{ rec_badge(p.phd_recommendation) }} {{ score_chip(p.final_score_phd) }}</td>
+              <td class="px-4 py-2 hidden md:table-cell">{{ status_badge(p.status) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      {{ empty_state("No professors recorded for this country") }}
+    {% endif %}
+  {% endcall %}
+</div>
+
+{% if show_hidden %}
+<p class="text-xs text-muted mt-3">Including hidden countries &middot; <a href="/country/{{ c.country|urlencode }}" class="text-accent hover:underline">apply hiding</a></p>
+{% endif %}
+{% endblock %}

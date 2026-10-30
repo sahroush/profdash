@@ -40,7 +40,7 @@
   {% endif %}
 {% endmacro %}
 
-{% macro page_header(title, subtitle='', back_href='', back_label='Back') %}
+{% macro page_header(title, subtitle='', back_href='', back_label='Back', link_href='', link_label='') %}
   <div class="mb-4 sm:mb-6">
     {% if back_href %}
       <a href="{{ back_href }}" class="text-sm text-accent hover:underline">&#8592; {{ back_label }}</a>
@@ -48,7 +48,14 @@
     <div class="flex flex-wrap items-end justify-between gap-2 mt-1">
       <div>
         <h1 class="text-xl sm:text-2xl font-bold tracking-tight">{{ title }}</h1>
-        {% if subtitle %}<p class="text-sm text-muted mt-0.5">{{ subtitle }}</p>{% endif %}
+        {% if link_href or subtitle %}
+          <p class="text-sm text-muted mt-0.5">
+            {% if link_href %}
+              <a href="{{ link_href }}" class="text-accent hover:underline">{{ link_label }}</a>{% if subtitle %} &middot; {% endif %}
+            {% endif %}
+            {{ subtitle }}
+          </p>
+        {% endif %}
       </div>
       {% if caller %}<div class="flex items-center gap-2">{{ caller() }}</div>{% endif %}
     </div>

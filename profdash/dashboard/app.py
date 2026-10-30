@@ -1,31 +1,28 @@
 """
-profdash web UI.
+Professor Dashboard web UI.
 
 Server-rendered Jinja2 + HTMX + Alpine.js + Tailwind. All data access goes
-through profdash.dashboard.db — no ORM.
-
-Display timezone comes from profile.toml (`timezone` key, default UTC).
-Run with:  prof serve   (or)   uvicorn profdash.dashboard.app:app
+through dashboard.db — no ORM.
 """
 from __future__ import annotations
 
 import json
 import math
+import re
 from datetime import date, datetime, timezone
 from functools import partial
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .. import paths
-from ..profile import load_profile
 from . import db
 from .db import (
+    APPLICATION_EVENT_TYPES,
     APPLICATION_STATUS_COLORS,
     APPLICATION_STATUS_LABELS,
     APPLICATION_STATUS_TAXONOMY,
@@ -33,22 +30,9 @@ from .db import (
     STATUS_TAXONOMY,
 )
 
-_profile = load_profile()
-_LOCAL_TZ = _profile.tz
+_TZ_TEHRAN = ZoneInfo("Asia/Tehran")
 
-
-def _tz_label(tz: ZoneInfo) -> str:
-    """Human-readable tz name+offset for the footer, e.g. 'UTC+03:30'."""
-    from datetime import datetime as _dt
-    off = _dt.now(tz).strftime("%z")
-    sign = "+" if off[0] == "+" else "\u2212"
-    pretty = f"{sign}{off[1:3]}:{off[3:]}"
-    return f"{str(tz)} ({pretty})" if str(tz) != "UTC" else "UTC"
-
-
-TZ_LABEL = _tz_label(_LOCAL_TZ)
-
-app = FastAPI(title="profdash")
+app = FastAPI(title="Professor Dashboard")
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
@@ -57,8 +41,8 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent /
           name="static")
 
 
-def _to_local(value):
-    """Convert a UTC datetime string to the configured local display time."""
+def _to_tehran(value):
+    """Convert a UTC datetime string to Tehran local display time."""
     if not value:
         return ""
     try:
@@ -69,7 +53,7 @@ def _to_local(value):
             dt = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(_LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+        return dt.astimezone(_TZ_TEHRAN).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return str(value)[:16].replace("T", " ")
 
@@ -129,11 +113,9 @@ STAGE_LABELS: dict[str, str] = {
     "deep_reviewed": "Deep Reviewed",
 }
 
-templates.env.filters["localtz"] = _to_local
-templates.env.filters["tehran"] = _to_local  # legacy alias
+templates.env.filters["tehran"] = _to_tehran
 templates.env.filters["days_until"] = _days_until
 templates.env.globals["today"] = date.today().isoformat()
-templates.env.globals["TZ_LABEL"] = TZ_LABEL
 templates.env.globals["STATUS_TAXONOMY"] = STATUS_TAXONOMY
 templates.env.globals["STATUS_LABELS"] = STATUS_LABELS
 templates.env.globals["STATUS_COLORS"] = STATUS_COLORS
@@ -146,6 +128,62 @@ templates.env.globals["APPLICATION_STATUS_TAXONOMY"] = APPLICATION_STATUS_TAXONO
 templates.env.globals["APPLICATION_STATUS_LABELS"] = APPLICATION_STATUS_LABELS
 templates.env.globals["APPLICATION_STATUS_COLORS"] = APPLICATION_STATUS_COLORS
 templates.env.globals["COLUMN_LABELS"] = COLUMN_LABELS
+templates.env.globals["APPLICATION_EVENT_TYPES"] = APPLICATION_EVENT_TYPES
+templates.env.globals["get_favorite_universities"] = db.get_favorite_universities
+templates.env.globals["is_favorite_university"] = db.is_favorite_university
+templates.env.globals["get_university_tiers"] = db.get_university_tiers
+templates.env.globals["TIER_STYLES"] = db.TIER_STYLES
+
+# Map-page globals: SVG <title> lookup for hide-any-country support.
+# NE title spellings differ from stored DB location_country values, so the client
+# resolves a typed country name through these aliases before matching <title>s.
+MAP_TITLE_ALIASES: dict[str, list[str]] = {
+    "United States": ["United States of America", "Puerto Rico"],
+    "United Kingdom": ["United Kingdom"],
+    "Czech Republic": ["Czechia"],
+    "South Korea": ["South Korea"],
+    "North Korea": ["North Korea"],
+    "Congo": ["Congo", "Dem. Rep. Congo"],
+    "Macedonia": ["Macedonia"],
+    "Hong Kong": ["Hong Kong"],
+    "Macao": ["Macao"],
+    "Singapore": ["Singapore"],
+    "Iran": ["Iran"],
+    "Taiwan": ["Taiwan"],
+    "Palestine": ["Palestine"],
+    "Western Sahara": ["W. Sahara"],
+    "Ivory Coast": ["Côte d'Ivoire"],
+    "Swaziland": ["eSwatini"],
+    "South Sudan": ["S. Sudan"],
+    "Democratic Republic of the Congo": ["Dem. Rep. Congo"],
+    "Republic of the Congo": ["Congo"],
+    "United Arab Emirates": ["United Arab Emirates"],
+    "Central African Republic": ["Central African Rep."],
+    "Equatorial Guinea": ["Eq. Guinea"],
+    "Dominican Republic": ["Dominican Rep."],
+    "Falkland Islands": ["Falkland Is."],
+    "French Southern and Antarctic Lands": ["Fr. S. Antarctic Lands"],
+    "Bosnia and Herzegovina": ["Bosnia and Herz."],
+    "Solomon Islands": ["Solomon Is."],
+    "East Timor": ["Timor-Leste"],
+    "Laos": ["Laos"],
+    "Vietnam": ["Vietnam"],
+    "Burma": ["Myanmar"],
+}
+
+# Every title present in the vendored SVG (for the datalist suggestions).
+from pathlib import Path as _Path
+_svg_src = (_Path(__file__).resolve().parent / "templates" / "_world_map.html").read_text()
+ALL_MAP_TITLES: list[str] = sorted(set(re.findall(r"<title>([^<]+)</title>", _svg_src)))
+
+templates.env.globals["all_titles"] = ALL_MAP_TITLES
+templates.env.globals["title_aliases"] = MAP_TITLE_ALIASES
+
+
+# --- Health -----------------------------------------------------------------
+
+
+# --- View-level country hiding ------------------------------------------------
 
 
 def _include_hidden(request: Request) -> bool:
@@ -180,8 +218,7 @@ def home(request: Request):
     ih = _include_hidden(request)
     stats = db.retry_once_on_lock(db.get_pipeline_stats, ih)
     confirmations = db.retry_once_on_lock(db.get_pending_confirmations)
-    followups = db.retry_once_on_lock(db.get_follow_up_professors,
-                                      _profile.outreach.follow_up_days, ih)
+    followups = db.retry_once_on_lock(db.get_follow_up_professors, 21, ih)
     deadlines_rows = db.retry_once_on_lock(db.get_upcoming_application_deadlines, 8, ih)
     open_apps = db.retry_once_on_lock(db.get_open_applications, 8, ih)
     positions_rows, _ = db.retry_once_on_lock(db.get_positions, filter_status="new", limit=5,
@@ -320,7 +357,7 @@ def professor_detail(request: Request, professor_id: str):
     if ctx is None:
         raise HTTPException(status_code=404, detail="Professor not found")
     p = ctx["p"]
-    parts = [x for x in (p.get("university"), p.get("location_city"),
+    parts = [x for x in (p.get("location_city"),
                          p.get("location_country")) if x]
     ctx["subtitle"] = " \u00b7 ".join(parts)
     return templates.TemplateResponse(request, "professor_detail.html", ctx)
@@ -401,14 +438,14 @@ def edit_item(request: Request, history_id: int, status: str = Form(...), note: 
 
 
 @app.get("/follow-ups", response_class=HTMLResponse)
-def follow_ups_page(request: Request, days: int | None = None):
-    threshold = days if days is not None else _profile.outreach.follow_up_days
+def follow_ups_page(request: Request, days: int = 21):
     all_contacted = db.retry_once_on_lock(db.get_all_contacted_professors,
                                           _include_hidden(request))
-    overdue = [p for p in all_contacted if p["days_waiting"] is not None and p["days_waiting"] > threshold]
-    waiting = [p for p in all_contacted if p["days_waiting"] is None or p["days_waiting"] <= threshold]
+    overdue = db.retry_once_on_lock(db.get_follow_up_professors, days, _include_hidden(request))
+    due_ids = {p["id"] for p in overdue}
+    waiting = [p for p in all_contacted if p["id"] not in due_ids]
     return templates.TemplateResponse(request, "follow_ups.html",
-                                      {"overdue": overdue, "waiting": waiting, "days": threshold})
+                                      {"overdue": overdue, "waiting": waiting, "days": days})
 
 
 # --- Universities ------------------------------------------------------------
@@ -445,7 +482,133 @@ def university_detail(request: Request, slug: str):
             "deadlines": [],
             "professors": profs,
         }
-    return templates.TemplateResponse(request, "university_detail.html", {"u": detail})
+    return templates.TemplateResponse(request, "university_detail.html", {"u": detail,
+                                       "is_fav": db.is_favorite_university(detail["university"]) or db.is_favorite_university(detail["normalized_name"]),
+                                       "uni_tier": db.get_university_tier(detail["normalized_name"]) or db.get_university_tier(detail["university"])})
+
+
+@app.post("/university/{slug}/tier")
+def university_set_tier(slug: str, tier: str = Form("")):
+    """Assign/clear tier. Empty value clears. Redirect back to the uni page."""
+    db.retry_once_on_lock(db.set_university_tier, slug, tier or None)
+    return RedirectResponse(f"/university/{quote(slug)}", status_code=303)
+
+
+@app.post("/university/{slug}/favorite")
+def university_toggle_favorite(slug: str):
+    db.retry_once_on_lock(db.toggle_favorite_university, slug)
+    return RedirectResponse(f"/university/{slug}", status_code=303)
+
+
+# --- Tier board (/tiers) --------------------------------------------------------
+
+def _tier_board_ctx(request: Request) -> dict:
+    board = db.retry_once_on_lock(db.get_tier_board, _include_hidden(request))
+    tiers = {t: board.get(t, []) for t in db.UNIVERSITY_TIERS}
+    stats = {
+        "tiered": sum(len(v) for v in tiers.values()),
+        "applied": sum(u["applied"] for v in tiers.values() for u in v),
+    }
+    per_tier = {}
+    for t, unis in tiers.items():
+        per_tier[t] = {
+            "universities": len(unis),
+            "contacted": sum(u["contacted_count"] for u in unis),
+            "applied": sum(u["applied"] for u in unis),
+        }
+    return {"tiers": tiers, "per_tier": per_tier, **stats}
+
+
+@app.get("/tiers", response_class=HTMLResponse)
+def tiers_page(request: Request):
+    return templates.TemplateResponse(request, "tiers.html", _tier_board_ctx(request))
+
+
+@app.get("/tiers-board")
+def tiers_board_fragment(request: Request):
+    """HTMX fragment: tier columns after a change."""
+    return templates.TemplateResponse(request, "_tier_columns.html", _tier_board_ctx(request))
+
+
+
+
+# --- Countries: world map + country detail ------------------------------------
+
+
+def _country_fill(contacted: int, prof_count: int, hidden: bool = False) -> str:
+    """Tint for a country path. Hidden countries get red; visible ones lerp
+    surface-2 toward accent by the CONTACTED RATIO (contacted / total profs).
+    Empty string = base fill (no data or 0% contacted)."""
+    if hidden:
+        # muted red, flat regardless of count (dark-theme red-500 family)
+        return "rgb(127 45 55)"
+    if prof_count <= 0:
+        return ""
+    t = min(1.0, contacted / prof_count) ** 0.5  # sqrt curve: small ratios still visible
+    if t <= 0:
+        return ""
+    # mix rgb(var(--c-surface-2)) toward rgb(var(--c-accent)) in sRGB channel space
+    base = (26, 30, 39)      # dark theme surface-2
+    accent = (96, 165, 250)  # dark theme accent
+    mix = tuple(round(b + (a - b) * t) for b, a in zip(base, accent))
+    return f"rgb({mix[0]} {mix[1]} {mix[2]})"
+
+
+@app.get("/map", response_class=HTMLResponse)
+def map_page(request: Request):
+    ih = _include_hidden(request)
+    # Always compute stats WITHOUT the hidden filter so hidden countries render
+    # red on the map; ?show_hidden=1 additionally lists them in the side tables.
+    stats = db.retry_once_on_lock(db.get_country_stats, True)  # unfiltered: hidden show red
+    hidden_set = set(db.get_hidden_countries())
+    mapped, unmapped = [], []
+    for s in stats:
+        s["hidden"] = s["country"] in hidden_set
+        if s["hidden"]:
+            s["href"] = None  # honor the hiding: no link while hidden
+        else:
+            s["href"] = "/country/" + quote(s["country"])
+        s["fill"] = _country_fill(s["contacted"], s["prof_count"], s["hidden"])
+        if s["iso"]:
+            mapped.append(s)
+        elif not s["hidden"]:
+            unmapped.append(s)
+    # Two stored spellings can share one ISO shape (UK / United Kingdom -> GB):
+    # keep the entry with more professors so the map links to the main page.
+    links: dict = {}
+    for s in mapped:
+        if s["hidden"]:
+            continue  # red fill only, no link
+        cur = links.get(s["iso"])
+        if cur is None or s["prof_count"] > cur["n"]:
+            links[s["iso"]] = {"href": s["href"], "fill": s["fill"],
+                               "label": s["country"], "n": s["prof_count"],
+                               "c": s["contacted"],
+                               "pct": round(100 * s["contacted"] / s["prof_count"])
+                                      if s["prof_count"] else 0}
+    # Red painting happens client-side by matching SVG <title> names against the
+    # raw hidden list — covers arbitrary (non-indexed) countries too.
+    return templates.TemplateResponse(request, "map.html",
+                                      {"stats": stats, "mapped": mapped,
+                                       "unmapped": unmapped, "links": links,
+                                       "hidden_names": db.get_hidden_countries(),
+                                       "show_hidden": ih})
+
+
+@app.get("/country/{name}", response_class=HTMLResponse)
+def country_page(request: Request, name: str):
+    include_hidden = _include_hidden(request)
+    detail = db.retry_once_on_lock(db.get_country_detail, name, include_hidden)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Country not found")
+    info = db.retry_once_on_lock(db.get_country_info, name)
+    # group programs by university for the universities card
+    unis: dict[str, list[dict]] = {}
+    for prog in detail["programs"]:
+        unis.setdefault(prog["university"], []).append(prog)
+    return templates.TemplateResponse(request, "country.html",
+                                      {"c": detail, "info": info, "unis": unis,
+                                       "show_hidden": include_hidden})
 
 
 # --- Deadlines ----------------------------------------------------------------
@@ -462,12 +625,22 @@ def deadlines_page(request: Request):
         filter_deadline_type=qp.get("deadline_type") or "",
         filter_confidence=qp.get("confidence") or "",
         upcoming_only=qp.get("upcoming", "1") == "1",
+        favorites_only=qp.get("favorites", "") == "1",
         limit=700,
     )
     options = db.retry_once_on_lock(db.get_deadline_filter_options)
     return templates.TemplateResponse(request, "deadlines.html",
                                       {"rows": rows, "total": total,
-                                       "options": options, "qp": qp})
+                                       "options": options, "qp": qp,
+                                       "favorites": db.get_favorite_universities()})
+
+
+@app.get("/open-applications", response_class=HTMLResponse)
+def open_applications_page(request: Request):
+    ih = _include_hidden(request)
+    rows = db.retry_once_on_lock(db.get_open_applications, 1000, ih)
+    return templates.TemplateResponse(request, "open_applications.html",
+                                      {"rows": rows, "total": len(rows), "qp": request.query_params})
 
 
 # --- Positions ----------------------------------------------------------------
@@ -505,12 +678,11 @@ def position_application_status(request: Request, position_id: str,
 
 
 @app.get("/shortlist", response_class=HTMLResponse)
-def shortlist_page(request: Request, track: str = "both", min_score: int | None = None):
-    floor = min_score if min_score is not None else _profile.outreach.min_score_shortlist
-    rows = db.retry_once_on_lock(db.get_shortlist, track=track, min_score=floor,
+def shortlist_page(request: Request, track: str = "both", min_score: int = 7):
+    rows = db.retry_once_on_lock(db.get_shortlist, track=track, min_score=min_score,
                                  include_hidden=_include_hidden(request))
     return templates.TemplateResponse(request, "shortlist.html",
-                                      {"rows": rows, "track": track, "min_score": floor})
+                                      {"rows": rows, "track": track, "min_score": min_score})
 
 
 @app.post("/professor/{professor_id}/mark-contacted")
@@ -561,3 +733,122 @@ def activity_page(request: Request, page: int = 1, status: str = ""):
     return templates.TemplateResponse(request, "activity.html",
                                       {"tasks": tasks[:per_page], "page": max(1, page),
                                        "status": status, "has_more": has_more})
+
+
+# --- Applications tracker -------------------------------------------------------
+
+
+@app.get("/applications", response_class=HTMLResponse)
+def applications_page(request: Request):
+    rows = db.retry_once_on_lock(db.get_applications)
+    program_options = db.retry_once_on_lock(db.get_program_picker_options)
+    return templates.TemplateResponse(request, "applications.html",
+                                      {"rows": rows,
+                                       "program_options": program_options})
+
+
+@app.post("/applications/create")
+def applications_create(request: Request, name: str = Form(...),
+                        url: str = Form(""), status: str = Form("not_applied"),
+                        notes: str = Form(""), program_id: str = Form(""),
+                        semester: str = Form("")):
+    if not url.strip() and program_id:
+        autofill = db.get_program_autofill(program_id)
+        if autofill and autofill.get("department_url"):
+            url = autofill["department_url"]
+    try:
+        app_id = db.create_application(name, url, status, notes,
+                                       program_id=program_id, semester=semester)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    if program_id and semester:
+        db.sync_application_events(app_id, program_id, semester)
+    return RedirectResponse("/applications", status_code=303)
+
+
+@app.post("/applications/{app_id}/update")
+def applications_update(request: Request, app_id: str, name: str = Form(...),
+                        url: str = Form(""), notes: str = Form(""),
+                        program_id: str = Form(""), semester: str = Form("")):
+    if not url.strip() and program_id:
+        autofill = db.get_program_autofill(program_id)
+        if autofill and autofill.get("department_url"):
+            url = autofill["department_url"]
+    if not db.update_application(app_id, name, url, notes,
+                                 program_id=program_id, semester=semester):
+        raise HTTPException(status_code=404, detail="Application not found")
+    if program_id and semester:
+        db.sync_application_events(app_id, program_id, semester)
+    return RedirectResponse("/applications", status_code=303)
+
+
+@app.post("/applications/{app_id}/delete")
+def applications_delete(request: Request, app_id: str):
+    db.delete_application(app_id)
+    return RedirectResponse("/applications", status_code=303)
+
+
+@app.get("/applications/prof-search")
+def applications_prof_search(q: str = ""):
+    """Narrowed professor list for the add-professor datalist."""
+    return {"profs": db.get_application_professor_options(search=q.strip())}
+
+
+@app.get("/applications/program-semesters")
+def applications_program_semesters(program_id: str):
+    return {"semesters": db.get_semester_options(program_id)}
+
+
+@app.get("/applications/program-autofill")
+def applications_program_autofill(program_id: str, semester: str = ""):
+    """Program URL + what events would sync for a program+cycle."""
+    data = db.get_program_autofill(program_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    deadlines = data["deadlines"]
+    if semester:
+        deadlines = [d for d in deadlines if d.get("cycle_label") == semester]
+    return {"department_url": data.get("department_url"),
+            "university": data.get("university"),
+            "program_name": data.get("program_name"),
+            "deadlines": deadlines}
+
+
+@app.post("/applications/{app_id}/status")
+def applications_status(request: Request, app_id: str, application_status: str = Form(...)):
+    if not db.update_application_status(app_id, application_status):
+        raise HTTPException(status_code=400, detail="Invalid status")
+    rows = db.retry_once_on_lock(db.get_applications)
+    row = next((r for r in rows if r["id"] == app_id), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return templates.TemplateResponse(request, "_application_tbody.html",
+                                      {"a": row,
+                                       "program_options": db.retry_once_on_lock(db.get_program_picker_options)})
+
+
+@app.post("/applications/{app_id}/professors/add")
+def applications_prof_add(request: Request, app_id: str, professor_id: str = Form(...)):
+    if not db.add_application_professor(app_id, professor_id.strip()):
+        raise HTTPException(status_code=400, detail="Unknown professor or application")
+    return RedirectResponse("/applications", status_code=303)
+
+
+@app.post("/applications/{app_id}/professors/{professor_id}/remove")
+def applications_prof_remove(request: Request, app_id: str, professor_id: str):
+    db.remove_application_professor(app_id, professor_id)
+    return RedirectResponse("/applications", status_code=303)
+
+
+@app.post("/applications/{app_id}/events")
+def applications_event_add(request: Request, app_id: str, event_type: str = Form(...),
+                           event_date: str = Form(...), note: str = Form("")):
+    if not db.add_application_event(app_id, event_type, event_date, note):
+        raise HTTPException(status_code=400, detail="Invalid event")
+    return RedirectResponse("/applications", status_code=303)
+
+
+@app.post("/applications/{app_id}/events/{event_id}/delete")
+def applications_event_delete(request: Request, app_id: str, event_id: str):
+    db.delete_application_event(app_id, event_id)
+    return RedirectResponse("/applications", status_code=303)

@@ -1,7 +1,7 @@
 {% extends "_base.html" %}
 {% from "_macros.html" import page_header, card, empty_state with context %}
 
-{% block title %}Activity — profdash{% endblock %}
+{% block title %}Activity — Professor Dashboard{% endblock %}
 
 {% block content %}
 {{ page_header("Agent Activity", tasks|length ~ " task(s) on this page") }}
@@ -29,7 +29,7 @@
     <tbody>
       {% for t in tasks %}
       <tr class="border-b border-line hover:bg-surface2/50">
-        <td class="px-4 py-2.5 text-xs text-muted tabular-nums whitespace-nowrap">{{ t.requested_at|localtz }}</td>
+        <td class="px-4 py-2.5 text-xs text-muted tabular-nums whitespace-nowrap">{{ t.requested_at|tehran }}</td>
         <td class="px-4 py-2.5 whitespace-nowrap">
           <span class="inline-flex items-center gap-1.5">
             {{ '&#128218;'|safe if t.task_type == 'fetch_papers' else '&#9997;'|safe }}

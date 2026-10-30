@@ -1,6 +1,6 @@
 {% from "_macros.html" import card with context %}
 <div id="notes-card">
-  {% call card("Notes", "updated " ~ (p.updated_at|localtz if p.updated_at else '—')) %}
+  {% call card("Notes", "updated " ~ (p.updated_at|tehran if p.updated_at else '—')) %}
     <form hx-post="/professor/{{ p.id }}/notes" hx-target="#notes-card" hx-swap="outerHTML">
       <textarea name="notes" rows="4"
                 class="w-full rounded-lg bg-surface2 border border-line p-2.5 text-sm

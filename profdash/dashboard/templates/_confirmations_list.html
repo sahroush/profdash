@@ -17,7 +17,7 @@
           {% if c.note %}<p class="text-sm text-muted mt-2 italic">&ldquo;{{ c.note }}&rdquo;</p>{% endif %}
         </div>
         <div class="flex items-center gap-2 shrink-0">
-          <span class="text-xs text-muted tabular-nums mr-1 hidden sm:inline">{{ c.at|localtz }}</span>
+          <span class="text-xs text-muted tabular-nums mr-1 hidden sm:inline">{{ c.at|tehran }}</span>
           <button hx-post="/confirmations/{{ c.id }}/confirm" hx-target="#confirmations-list" hx-swap="outerHTML"
                   hx-confirm="Set {{ c.professor }} to &ldquo;{{ STATUS_LABELS.get(c.status, c.status) }}&rdquo;?"
                   class="h-8 px-3 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-500 transition-colors">

@@ -1,10 +1,12 @@
 {% extends "_base.html" %}
 {% from "_macros.html" import page_header, card, status_badge, rec_badge, score_chip, empty_state with context %}
 
-{% block title %}{{ p.professor }} — profdash{% endblock %}
+{% block title %}{{ p.professor }} — Professor Dashboard{% endblock %}
 
 {% block content %}
-{{ page_header(p.professor, subtitle, back_href="/professors", back_label="All professors") }}
+{{ page_header(p.professor, subtitle, back_href="/professors", back_label="All professors",
+               link_href=("/university/" ~ (p.university|lower|urlencode)) if p.university else "",
+               link_label=p.university) }}
 
 <div class="flex flex-wrap items-center gap-2 mb-5">
   {% if p.homepage %}
@@ -99,7 +101,7 @@
                 <span class="px-2 py-0.5 rounded-full bg-surface2 text-muted">{{ e.source_type or 'source' }}</span>
                 {% if e.stage %}<span class="px-2 py-0.5 rounded-full bg-surface2 text-muted">{{ e.stage }}</span>{% endif %}
                 {% if e.source_url %}<a href="{{ e.source_url }}" target="_blank" rel="noopener" class="text-accent hover:underline">source &rarr;</a>{% endif %}
-                <span class="text-muted tabular-nums">{{ e.fetched_at|localtz }}</span>
+                <span class="text-muted tabular-nums">{{ e.fetched_at|tehran }}</span>
               </div>
             </li>
             {% endfor %}
@@ -112,7 +114,7 @@
                   <span class="px-2 py-0.5 rounded-full bg-surface2 text-muted">{{ e.source_type or 'source' }}</span>
                   {% if e.stage %}<span class="px-2 py-0.5 rounded-full bg-surface2 text-muted">{{ e.stage }}</span>{% endif %}
                   {% if e.source_url %}<a href="{{ e.source_url }}" target="_blank" rel="noopener" class="text-accent hover:underline">source &rarr;</a>{% endif %}
-                  <span class="text-muted tabular-nums">{{ e.fetched_at|localtz }}</span>
+                  <span class="text-muted tabular-nums">{{ e.fetched_at|tehran }}</span>
                 </div>
               </li>
               {% endfor %}
@@ -133,7 +135,7 @@
     {% include "_draft_card.html" %}
 
     {% call card("University Context",
-                 uni_ctx.deadlines|length ~ " deadlines" ~ (" · " ~ uni_ctx.positions|length ~ " positions" if uni_ctx.positions else "")) %}
+                 uni_ctx.deadlines|length ~ " deadlines" ~ (" &middot; " ~ uni_ctx.positions|length ~ " positions" if uni_ctx.positions else "")) %}
       {% if uni_ctx.deadlines or uni_ctx.positions %}
         {% if uni_ctx.deadlines %}
         <ul class="space-y-2 mb-3">

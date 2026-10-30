@@ -1,10 +1,20 @@
 {% extends "_base.html" %}
 {% from "_macros.html" import page_header, card, rec_badge, score_chip, status_badge, empty_state with context %}
 
-{% block title %}{{ u.university }} — profdash{% endblock %}
+{% block title %}{{ u.university }} — Professor Dashboard{% endblock %}
 
 {% block content %}
-{{ page_header(u.university, u.location_country or "", back_href="/universities", back_label="All universities") }}
+{% call page_header(u.university, u.location_country or "", back_href="/universities", back_label="All universities") %}
+  <form method="post" action="/university/{{ u.normalized_name|urlencode }}/favorite">
+    <button type="submit" aria-label="{{ 'Remove from favorites' if is_fav else 'Add to favorites' }}"
+            class="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border text-xs font-medium
+                   {{ 'border-amber-400/60 bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
+                      if is_fav else 'border-line bg-surface text-muted hover:border-accent/60 hover:text-accent' }}">
+      {{ '★ Favorited' if is_fav else '☆ Favorite' }}
+    </button>
+  </form>
+  {% include "_university_tier_form.html" %}
+{% endcall %}
 
 <div class="flex flex-wrap items-center gap-2 mb-5">
   {% if u.department_url %}
@@ -92,7 +102,7 @@
             <p><span class="text-xs uppercase tracking-wide text-muted block">Funding</span>{{ prog.funding_info }}</p>
             {% endif %}
             {% if prog.visa_notes %}
-            <p><span class="text-xs uppercase tracking-wide text-muted block">&#128675; Visa notes</span>{{ prog.visa_notes }}</p>
+            <p><span class="text-xs uppercase tracking-wide text-muted block">&#128675; Visa corridor (Iran-applicant lens)</span>{{ prog.visa_notes }}</p>
             {% endif %}
             {% if prog.admission_requirements %}
             <p><span class="text-xs uppercase tracking-wide text-muted block">Admission</span>{{ prog.admission_requirements }}</p>

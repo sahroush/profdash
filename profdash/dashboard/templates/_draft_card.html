@@ -1,7 +1,7 @@
 {% from "_macros.html" import card with context %}
 {% if draft %}
 <div id="draft-card" x-data="{ copied: false }">
-  {% call card("Latest Draft", (draft.at|localtz) ~ (" &middot; in Gmail drafts" if draft.gmail_saved else " &middot; stored locally only")) %}
+  {% call card("Latest Draft", (draft.at|tehran) ~ (" &middot; in Gmail drafts" if draft.gmail_saved else " &middot; stored locally only")) %}
     <div class="flex items-center justify-between gap-2 mb-2">
       <h3 class="text-sm font-semibold">{{ draft.subject or '(no subject)' }}</h3>
       <button @click="navigator.clipboard.writeText($refs.body.innerText); copied = true; setTimeout(() => copied = false, 1500)"

@@ -222,6 +222,48 @@ DDL: list[str] = [
         value  TEXT
     )
     """,
+    # Applications tracker (application pipeline: status, related professors, events)
+    """CREATE TABLE IF NOT EXISTS applications (
+        id           TEXT PRIMARY KEY,
+        created_at   TEXT,
+        updated_at   TEXT,
+        name         TEXT NOT NULL,
+        url          TEXT,
+        status       TEXT NOT NULL DEFAULT 'not_applied',
+        program_id   TEXT,
+        semester     TEXT,
+        notes        TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS application_professors (
+        application_id TEXT NOT NULL,
+        professor_id   TEXT NOT NULL,
+        PRIMARY KEY (application_id, professor_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS application_events (
+        id             TEXT PRIMARY KEY,
+        application_id TEXT NOT NULL,
+        event_type     TEXT NOT NULL,
+        event_date     TEXT,
+        note           TEXT,
+        created_at     TEXT
+    )""",
+    # University tier board (S/A/B application tiers, per normalized university name)
+    """CREATE TABLE IF NOT EXISTS university_tiers (
+        normalized_name TEXT PRIMARY KEY,
+        display_name    TEXT,
+        tier            TEXT NOT NULL,
+        updated_at      TEXT
+    )""",
+    # Country research notes (visa / PR / funding landscape per country)
+    """CREATE TABLE IF NOT EXISTS country_info (
+        country           TEXT PRIMARY KEY,
+        visa_summary      TEXT,
+        pr_path           TEXT,
+        funding_landscape TEXT,
+        sources           TEXT,
+        updated_at        TEXT,
+        notes             TEXT
+    )""",
 ]
 
 INDEXES: list[str] = [
@@ -242,6 +284,7 @@ INDEXES: list[str] = [
        ON paper_recommendations(professor_id, year DESC)""",
     "CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status)",
     "CREATE INDEX IF NOT EXISTS idx_positions_source_email ON positions(source_email_id)",
+    "CREATE INDEX IF NOT EXISTS idx_app_events_app ON application_events(application_id)",
 ]
 
 

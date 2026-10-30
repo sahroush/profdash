@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}profdash{% endblock %}</title>
+  <title>{% block title %}Professor Dashboard{% endblock %}</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#127891;</text></svg>">
   <script>
     if (localStorage.getItem('darkMode') === 'light') {
@@ -66,12 +66,13 @@
     <div class="max-w-7xl mx-auto px-2 sm:px-4 h-14 flex items-center gap-3">
       <a href="/" class="flex items-center gap-2 font-semibold tracking-tight shrink-0">
         <span class="w-7 h-7 rounded-lg bg-accent/15 text-accent grid place-items-center text-sm">&#127891;</span>
-        <span class="hidden sm:inline">prof<span class="text-muted font-normal">dash</span></span>
+        <span class="hidden sm:inline">Prof<span class="text-muted font-normal">Dashboard</span></span>
       </a>
 
       <nav class="hidden lg:flex items-center gap-1 text-sm ml-4" aria-label="Main">
         {% set nav_groups = [
-          ('', [('/', 'Home'), ('/professors', 'Professors'), ('/universities', 'Universities'), ('/positions', 'Positions'), ('/deadlines', 'Deadlines')]),
+          ('', [('/', 'Home'), ('/professors', 'Professors'), ('/universities', 'Universities'), ('/tiers', 'Tier Board'), ('/map', 'Map'), ('/positions', 'Positions'), ('/deadlines', 'Deadlines')]),
+          ('Applications', [('/applications', 'My Applications'), ('/open-applications', 'Open')]),
           ('Outreach', [('/shortlist', 'Shortlist'), ('/follow-ups', 'Follow-ups'), ('/confirmations', 'Confirmations'), ('/activity', 'Activity')]),
         ] %}
         {% for group_label, links in nav_groups %}
@@ -150,7 +151,7 @@
         <input type="search" name="q" placeholder="Search everything&#8230;"
                class="w-full h-9 px-3 rounded-lg bg-surface2 border border-line text-sm focus:outline-none focus:ring-2 focus:ring-accent/50">
       </form>
-      {% set nav_flat = [('/', 'Home'), ('/professors', 'Professors'), ('/universities', 'Universities'), ('/positions', 'Positions'), ('/deadlines', 'Deadlines'), ('/shortlist', 'Shortlist'), ('/follow-ups', 'Follow-ups'), ('/confirmations', 'Confirmations'), ('/activity', 'Activity'), ('/pipeline-stats', 'Pipeline Stats')] %}
+      {% set nav_flat = [('/', 'Home'), ('/professors', 'Professors'), ('/universities', 'Universities'), ('/tiers', 'Tier Board'), ('/map', 'Map'), ('/positions', 'Positions'), ('/deadlines', 'Deadlines'), ('/applications', 'My Applications'), ('/open-applications', 'Open Applications'), ('/shortlist', 'Shortlist'), ('/follow-ups', 'Follow-ups'), ('/confirmations', 'Confirmations'), ('/activity', 'Activity'), ('/pipeline-stats', 'Pipeline Stats')] %}
       {% for href, label in nav_flat %}
         {% set active = (href == '/' and request.url.path == '/') or (href != '/' and request.url.path.startswith(href)) %}
         <a href="{{ href }}"
@@ -161,18 +162,30 @@
     </div>
   </header>
 
-  <main id="main-content" class="flex-1 max-w-7xl w-full mx-auto px-2 sm:px-4 py-4 sm:py-6">
+  <main id="main-content" class="flex-1 {% block main_width %}max-w-7xl{% endblock %} w-full mx-auto px-2 sm:px-4 py-4 sm:py-6">
     {% block content %}{% endblock %}
   </main>
 
   <footer class="border-t border-line text-xs text-muted py-3">
     <div class="max-w-7xl mx-auto px-2 sm:px-4 flex justify-between">
-      <span>profdash</span>
-      <span>Times shown in {{ TZ_LABEL }}</span>
+      <span>Professor Dashboard</span>
+      <span>Times shown in Tehran time (+03:30)</span>
     </div>
   </footer>
 
   <script>
+    async function hideCountry(name) {
+      name = (name || '').trim();
+      if (!name) return;
+      const current = {{ get_hidden_countries()|tojson }};
+      if (current.some(c => c.toLowerCase() === name.toLowerCase())) { location.reload(); return; }
+      await fetch('/settings/hidden-countries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ countries: [...current, name] }),
+      });
+      location.reload();
+    }
     async function removeHiddenCountry(country) {
       const current = {{ get_hidden_countries()|tojson }};
       await fetch('/settings/hidden-countries', {

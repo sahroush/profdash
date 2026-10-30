@@ -4,11 +4,15 @@ import json
 import os
 import re
 import sqlite3
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from .. import paths
+# Default DB path: <repo-root>/data/evaluations.sqlite, next to PLAN.md.
+_DEFAULT_DB_PATH = (
+    Path(__file__).resolve().parent.parent / "data" / "evaluations.sqlite"
+)
 
 
 # Status taxonomy from PLAN.md
@@ -27,8 +31,11 @@ STATUS_TAXONOMY = [
 
 
 def db_path() -> Path:
-    """Resolve the active SQLite file via profdash.paths (env/cwd conventions)."""
-    return paths.find_db()
+    """Resolve the active SQLite file. Overrideable via PROF_DB_PATH env."""
+    override = os.environ.get("PROF_DB_PATH")
+    if override:
+        return Path(override).expanduser().resolve()
+    return _DEFAULT_DB_PATH
 
 
 # Columns displayed in the table view (Prompt 1). Centralized here so
@@ -82,8 +89,8 @@ def connect() -> sqlite3.Connection:
     p = db_path()
     if not p.exists():
         raise FileNotFoundError(
-            f"Database not found at {p}. "
-            f"Run `prof init` or pass --db / set PROF_DB_PATH."
+            f"evaluations.sqlite not found at {p}. "
+            f"Set PROF_DB_PATH or create a symlink at data/evaluations.sqlite."
         )
     conn = sqlite3.connect(
         str(p),
@@ -115,7 +122,7 @@ def transaction(conn: sqlite3.Connection):
 def retry_once_on_lock(fn, *args, **kwargs):
     """If sqlite raises 'database is locked' (busy_timeout exhausted), retry once.
 
-    Cron workers may hold a brief write transaction; we don't want
+    Hermes cron workers may hold a brief write transaction; we don't want
     to surface a 500 just because we overlapped them by a few ms.
     """
     try:
@@ -791,6 +798,37 @@ def set_config_value(key: str, value: str) -> None:
         )
 
 
+# --- Favorite universities (config-backed) --------------------------------------
+
+FAVORITES_KEY = "favorite_universities"
+
+
+def get_favorite_universities() -> list[str]:
+    """Normalized names of favorited universities."""
+    raw = get_config_value(FAVORITES_KEY) or ""
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def is_favorite_university(name: str) -> bool:
+    return _normalize_university(name) in set(get_favorite_universities())
+
+
+def toggle_favorite_university(name: str) -> bool:
+    """Add/remove a university (any stored name form) from favorites. Returns new state."""
+    norm = _normalize_university(name)
+    if not norm:
+        return False
+    favs = get_favorite_universities()
+    if norm in favs:
+        favs.remove(norm)
+        state = False
+    else:
+        favs.append(norm)
+        state = True
+    set_config_value(FAVORITES_KEY, ", ".join(favs))
+    return state
+
+
 # --- View-level country hiding (config-driven) ---------------------------------
 
 HIDDEN_COUNTRIES_KEY = "hidden_countries"
@@ -832,40 +870,30 @@ def _hide_countries_sql(alias: str = "", include_hidden: bool = False) -> tuple[
 
 
 def get_follow_up_professors(days: int = 21, include_hidden: bool = False) -> list[dict[str, Any]]:
-    """Get professors who were contacted more than `days` ago with no reply."""
-    hide_cond, hide_params = _hide_countries_sql(include_hidden=include_hidden)
-    hide_seg = f"AND {hide_cond}" if hide_cond else ""
-    with connect() as conn:
-        rows = conn.execute(
-            f"""SELECT id, professor, university, location_country, email,
-                      status, last_contacted_at, fit_tier, final_score_phd,
-                      CAST(julianday('now') - julianday(last_contacted_at) AS INTEGER) as days_waiting
-               FROM professors
-               WHERE status = 'contacted'
-                 AND last_contacted_at IS NOT NULL
-                 AND julianday('now') - julianday(last_contacted_at) > ?
-                 {hide_seg}
-               ORDER BY last_contacted_at ASC""",
-            (days, *hide_params),
-        ).fetchall()
-        return [dict(r) for r in rows]
+    """Due scheduled actions, explicit follow-ups, and overdue unanswered mail."""
+    return [p for p in get_all_contacted_professors(include_hidden)
+            if (p["action_due"] if p["next_action_at"] else
+                p["status"] == "needs_follow_up" or
+                (p["days_waiting"] is not None and p["days_waiting"] > days))]
 
 
 def get_all_contacted_professors(include_hidden: bool = False) -> list[dict[str, Any]]:
-    """Get ALL professors with status 'contacted'."""
+    """Unanswered outreach plus actionable replies; excludes closed routes."""
     hide_cond, hide_params = _hide_countries_sql(include_hidden=include_hidden)
     hide_seg = f"AND {hide_cond}" if hide_cond else ""
     with connect() as conn:
         rows = conn.execute(
             f"""SELECT id, professor, university, location_country, email,
                       status, last_contacted_at, fit_tier, final_score_phd,
-                      CASE WHEN last_contacted_at IS NOT NULL
-                           THEN CAST(julianday('now') - julianday(last_contacted_at) AS INTEGER)
-                           ELSE NULL END as days_waiting
+                      NULLIF(next_action_at, '') AS next_action_at, notes,
+                      date(next_action_at) <= date('now') AS action_due,
+                      CAST(julianday('now') - julianday(last_contacted_at) AS INTEGER) AS days_waiting
                FROM professors
-               WHERE status = 'contacted'
+               WHERE (status IN ('contacted', 'no_response', 'needs_follow_up')
+                      OR (status IN ('replied_interested', 'conditional_accept')
+                          AND NULLIF(next_action_at, '') IS NOT NULL))
                  {hide_seg}
-               ORDER BY last_contacted_at ASC""",
+               ORDER BY COALESCE(NULLIF(next_action_at, ''), last_contacted_at) ASC""",
             hide_params,
         ).fetchall()
         return [dict(r) for r in rows]
@@ -883,6 +911,7 @@ def get_all_deadlines(
     filter_deadline_type: str = "",
     filter_confidence: str = "",
     upcoming_only: bool = True,
+    favorites_only: bool = False,
     limit: int = 200,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -892,6 +921,18 @@ def get_all_deadlines(
     """
     where_clauses = []
     params = []
+
+    if favorites_only:
+        favs = set(get_favorite_universities())
+        raw: list[str] = []
+        if favs:
+            with connect() as conn:
+                names = [r[0] for r in conn.execute(
+                    "SELECT DISTINCT university FROM university_programs")]
+            raw = [n for n in names if _normalize_university(n) in favs]
+        ph = ",".join("?" for _ in raw) or "''"
+        where_clauses.append(f"up.university IN ({ph})")
+        params.extend(raw)
 
     if upcoming_only:
         where_clauses.append("pd.deadline_date >= date('now') AND pd.deadline_date IS NOT NULL")
@@ -956,7 +997,12 @@ def get_all_deadlines(
         params.extend([limit, offset])
         rows = conn.execute(sql, params).fetchall()
 
-    return [dict(r) for r in rows], total
+    out = [dict(r) for r in rows]
+    favs = set(get_favorite_universities())
+    for r in out:
+        r["is_favorite"] = _normalize_university(r["university"]) in favs
+
+    return out, total
 
 
 def get_deadline_filter_options() -> dict[str, list[str]]:
@@ -1010,9 +1056,9 @@ def get_university_detail(university_slug: str) -> Optional[dict[str, Any]]:
         prog_ph = ",".join("?" for _ in prog_names)
         prog_rows = conn.execute(
             f"""SELECT * FROM university_programs
-                WHERE LOWER(university) IN ({prog_ph})
+                WHERE (LOWER(university) IN ({prog_ph}) OR university IN ({prog_ph}))
                 ORDER BY track""",
-            [n.lower() for n in prog_names],
+            [n.lower() for n in prog_names] + prog_names,
         ).fetchall()
         
         if not prog_rows:
@@ -1042,7 +1088,7 @@ def get_university_detail(university_slug: str) -> Optional[dict[str, Any]]:
                       phd_recommendation, final_score_phd, masters_recommendation,
                       final_score_masters, status, email, homepage
                FROM professors
-               WHERE LOWER(university) IN ({prof_ph})
+               WHERE (LOWER(university) IN ({prof_ph}) OR university IN ({prof_ph}))
                {('AND ' + hide_cond) if hide_cond else ''}
                ORDER BY
                  CASE
@@ -1054,7 +1100,7 @@ def get_university_detail(university_slug: str) -> Optional[dict[str, Any]]:
                    ELSE 6
                  END,
                  final_score_phd DESC NULLS LAST""",
-            [n.lower() for n in prof_names] + list(hide_params),
+            [n.lower() for n in prof_names] + prof_names + list(hide_params),
         ).fetchall()
         professors = [dict(r) for r in prof_rows]
         
@@ -1520,6 +1566,136 @@ APPLICATION_STATUS_COLORS = {
 }
 
 
+# --- University tier board (S/A/B) ----------------------------------------------
+
+UNIVERSITY_TIERS = ["S", "A", "B"]
+
+TIER_STYLES = {
+    "S": ("bg-green-100", "dark:bg-green-900/50", "text-green-800", "dark:text-green-300", "Top tier"),
+    "A": ("bg-sky-100", "dark:bg-sky-900/50", "text-sky-800", "dark:text-sky-300", "Good"),
+    "B": ("bg-amber-100", "dark:bg-amber-900/50", "text-amber-800", "dark:text-amber-300", "Safety net"),
+}
+
+
+def get_university_tiers() -> dict[str, str]:
+    """normalized_name -> tier for all tiered universities."""
+    with connect() as conn:
+        rows = conn.execute("SELECT normalized_name, tier FROM university_tiers").fetchall()
+    return {r["normalized_name"]: r["tier"] for r in rows}
+
+
+def get_university_tier(name: str) -> Optional[str]:
+    return get_university_tiers().get(_normalize_university(name))
+
+
+def set_university_tier(name: str, tier: Optional[str]) -> None:
+    """Assign (or clear with None) a tier for a university, any stored name form."""
+    norm = _normalize_university(name)
+    if not norm:
+        return
+    with connect() as conn:
+        with transaction(conn):
+            if tier is None:
+                conn.execute("DELETE FROM university_tiers WHERE normalized_name = ?", (norm,))
+            else:
+                if tier not in UNIVERSITY_TIERS:
+                    raise ValueError(f"Invalid tier: {tier}")
+                row = conn.execute(
+                    """SELECT university FROM university_programs
+                       WHERE LOWER(university) = ? OR university = ? LIMIT 1""",
+                    (norm, name),
+                ).fetchone()
+                display = row["university"] if row else name
+                conn.execute(
+                    """INSERT INTO university_tiers (normalized_name, display_name, tier, updated_at)
+                       VALUES (?, ?, ?, datetime('now'))
+                       ON CONFLICT(normalized_name) DO UPDATE SET
+                         tier = excluded.tier, display_name = excluded.display_name,
+                         updated_at = excluded.updated_at""",
+                    (norm, display, tier),
+                )
+
+
+def get_tier_board(include_hidden: bool = False) -> dict[str, list[dict[str, Any]]]:
+    """Tiered universities with per-uni outreach stats, grouped by tier.
+
+    Per uni: professors count (hidden-country aware), contacted count,
+    applied count (applications linked to a program at that university),
+    next upcoming deadline (open/close only).
+    """
+    hide_cond, hide_params = _hide_countries_sql(include_hidden=include_hidden)
+    with connect() as conn:
+        tier_rows = conn.execute(
+            "SELECT normalized_name, display_name, tier FROM university_tiers ORDER BY display_name"
+        ).fetchall()
+
+        prof_rows = _prof_stats_by_university(include_hidden)
+
+        app_rows = conn.execute(
+            """SELECT up.university, COUNT(DISTINCT a.id) AS n
+               FROM applications a JOIN university_programs up ON up.id = a.program_id
+               GROUP BY up.university"""
+        ).fetchall()
+
+        dl_rows = conn.execute(
+            f"""SELECT up.university AS ukey, MIN(pd.deadline_date) AS next_date,
+                       pd.deadline_type, up.track
+                FROM program_deadlines pd
+                JOIN university_programs up ON up.id = pd.university_program_id
+                WHERE pd.deadline_date IS NOT NULL AND pd.deadline_date >= date('now')
+                  AND pd.deadline_type IN ('application_close', 'application')
+                  {('AND ' + hide_cond.replace('location_country', 'up.location_country')) if hide_cond else ''}
+                GROUP BY ukey, pd.deadline_type, up.track
+                ORDER BY next_date ASC""",
+            hide_params,
+        ).fetchall()
+
+    profs = {r["nname"]: dict(r) for r in prof_rows}
+    applied = {_normalize_university(r["university"]): r["n"] for r in app_rows}
+    deadlines: dict[str, dict[str, Any]] = {}
+    for r in dl_rows:
+        ukey = _normalize_university(r["ukey"])
+        if ukey not in deadlines or (r["next_date"] or "") < deadlines[ukey]["date"]:
+            deadlines[ukey] = {"date": r["next_date"], "type": r["deadline_type"], "track": r["track"]}
+
+    out: dict[str, list[dict[str, Any]]] = {t: [] for t in UNIVERSITY_TIERS}
+    for tr in tier_rows:
+        norm = tr["normalized_name"]
+        p = profs.get(norm, {})
+        out.setdefault(tr["tier"], []).append({
+            "normalized_name": norm,
+            "display_name": tr["display_name"] or norm.title(),
+            "total_professors": p.get("total", 0) or 0,
+            "contacted_count": p.get("contacted", 0) or 0,
+            "applied": applied.get(norm, 0),
+            "next_deadline": deadlines.get(norm),
+        })
+    for lst in out.values():
+        lst.sort(key=lambda x: (-x["contacted_count"], -x["total_professors"], x["display_name"]))
+    return out
+
+
+def _prof_stats_by_university(include_hidden: bool = False) -> list[dict[str, Any]]:
+    """Per-normalized-university professor stats (hidden-country aware)."""
+    hide_cond, hide_params = _hide_countries_sql(include_hidden=include_hidden)
+    with connect() as conn:
+        rows = conn.execute(
+            f"""SELECT university, location_country, status FROM professors
+                {('WHERE ' + hide_cond) if hide_cond else ''}""",
+            hide_params,
+        ).fetchall()
+    stats: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        norm = _normalize_university(row["university"] or "")
+        if not norm:
+            continue
+        s = stats.setdefault(norm, {"nname": norm, "total": 0, "contacted": 0})
+        s["total"] += 1
+        if (row["status"] or "new") not in ("not_contacted", "new"):
+            s["contacted"] += 1
+    return list(stats.values())
+
+
 def update_position_application_status(
     position_id: str,
     application_status: str,
@@ -1639,6 +1815,8 @@ def get_open_applications(limit: int = 8,
     A program counts as open if its earliest future/present closing date
     exists and there is no opening date still in the future (i.e. the
     window has opened or was never explicitly recorded).
+    Returns one row per program with funding/visa/source details and all
+    candidate closing dates (`closes` list, `closes_on` = earliest).
     """
     close_ph = ",".join("?" for _ in APPLICATION_CLOSE_TYPES)
     open_ph = ",".join("?" for _ in APPLICATION_OPEN_TYPES)
@@ -1647,6 +1825,7 @@ def get_open_applications(limit: int = 8,
         rows = conn.execute(
             f"""SELECT up.id AS program_id, up.university, up.track,
                        up.program_name, up.location_country, up.funding_confidence,
+                       up.funding_info, up.visa_notes, up.source_urls,
                        MIN(c.deadline_date) AS closes_on,
                        CAST(julianday(MIN(c.deadline_date)) - julianday('now') AS INTEGER)
                            AS days_left
@@ -1669,7 +1848,27 @@ def get_open_applications(limit: int = 8,
                 LIMIT ?""",
             (*APPLICATION_CLOSE_TYPES, *APPLICATION_OPEN_TYPES, *hide_params, limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
+        # attach all candidate closing dates per program
+        pids = [r["program_id"] for r in out]
+        if pids:
+            ph = ",".join("?" for _ in pids)
+            dates: dict[str, list[str]] = {}
+            for pid, d in conn.execute(
+                f"""SELECT university_program_id, deadline_date FROM program_deadlines
+                    WHERE university_program_id IN ({ph})
+                      AND deadline_type IN ({close_ph})
+                      AND deadline_date IS NOT NULL AND deadline_date >= date('now')
+                    ORDER BY deadline_date""",
+                (*pids, *APPLICATION_CLOSE_TYPES),
+            ):
+                dates.setdefault(pid, []).append(d)
+            for r in out:
+                r["closes"] = dates.get(r["program_id"], [])
+        else:
+            for r in out:
+                r["closes"] = []
+        return out
 
 
 def get_latest_email_draft(professor_id: str) -> Optional[dict[str, Any]]:
@@ -1703,3 +1902,508 @@ def get_latest_email_draft(professor_id: str) -> Optional[dict[str, Any]]:
             "task_status": row["status"],
             "at": row["completed_at"] or row["requested_at"],
         }
+
+
+# --- Countries: world map + country detail pages -----------------------------
+
+# Exact stored location_country value -> ISO2 code used by the vendored world SVG.
+# Missing entries (e.g. "European Union") render in the "not on map" list instead.
+COUNTRY_ISO: dict[str, str] = {
+    "United States": "US",
+    "United Kingdom": "GB",
+    "UK": "GB",
+    "Germany": "DE",
+    "India": "IN",
+    "Canada": "CA",
+    "South Korea": "KR",
+    "China": "CN",
+    "Japan": "JP",
+    "Australia": "AU",
+    "Israel": "IL",
+    "Taiwan": "TW",
+    "Italy": "IT",
+    "Austria": "AT",
+    "Netherlands": "NL",
+    "France": "FR",
+    "Singapore": "SG",
+    "Poland": "PL",
+    "Hong Kong": "HK",
+    "Greece": "GR",
+    "Denmark": "DK",
+    "Belgium": "BE",
+    "Finland": "FI",
+    "Czech Republic": "CZ",
+    "New Zealand": "NZ",
+    "Switzerland": "CH",
+    "Sweden": "SE",
+    "Spain": "ES",
+    "Portugal": "PT",
+    "Norway": "NO",
+    "Macao": "MO",
+    "Latvia": "LV",
+    "Ireland": "IE",
+    "Iran": "IR",
+    "Cyprus": "CY",
+    "Chile": "CL",
+    "Bulgaria": "BG",
+    "Brazil": "BR",
+    "Saudi Arabia": "SA",
+}
+
+
+def get_country_stats(include_hidden: bool = False) -> list[dict[str, Any]]:
+    """Per-country counts from professors + university_programs.
+
+    Returns [{country, iso, prof_count, contacted, uni_count}] sorted by
+    prof_count desc. Respects the view-level hidden-countries filter.
+    """
+    hide_cond, hide_params = _hide_countries_sql(include_hidden=include_hidden)
+    prof_where = ("WHERE location_country IS NOT NULL AND TRIM(location_country) != ''"
+                  + (f" AND {hide_cond}" if hide_cond else ""))
+    uni_where = ("WHERE location_country IS NOT NULL AND TRIM(location_country) != ''"
+                 + (f" AND {hide_cond}" if hide_cond else ""))
+    with connect() as conn:
+        prof_rows = conn.execute(
+            f"""SELECT location_country, COUNT(*) AS n,
+                       SUM(CASE WHEN status NOT IN ('not_contacted','new') THEN 1 ELSE 0 END) AS contacted
+                FROM professors {prof_where} GROUP BY location_country""",
+            hide_params,
+        ).fetchall()
+        uni_rows = conn.execute(
+            f"""SELECT location_country, COUNT(DISTINCT LOWER(university)) AS n
+                FROM university_programs {uni_where} GROUP BY location_country""",
+            hide_params,
+        ).fetchall()
+
+    uni_counts = {r["location_country"]: r["n"] for r in uni_rows}
+    stats: dict[str, dict[str, Any]] = {}
+    for r in prof_rows:
+        country = r["location_country"]
+        stats[country] = {
+            "country": country,
+            "iso": COUNTRY_ISO.get(country, ""),
+            "prof_count": r["n"],
+            "contacted": r["contacted"] or 0,
+            "uni_count": uni_counts.pop(country, 0),
+        }
+    for country, n in uni_counts.items():
+        stats[country] = {
+            "country": country,
+            "iso": COUNTRY_ISO.get(country, ""),
+            "prof_count": 0,
+            "contacted": 0,
+            "uni_count": n,
+        }
+    result = list(stats.values())
+    result.sort(key=lambda x: (-x["prof_count"], -x["uni_count"], x["country"]))
+    return result
+
+
+def get_country_detail(country: str, include_hidden: bool = False) -> Optional[dict[str, Any]]:
+    """Everything for /country/{name}: professors + university programs for one
+    exact stored location_country value. None if nothing stored under it."""
+    name = country.strip()
+    if not name:
+        return None
+    hide_cond, hide_params = _hide_countries_sql(include_hidden=include_hidden)
+    hide_sql = f" AND {hide_cond}" if hide_cond else ""
+    with connect() as conn:
+        prof_rows = conn.execute(
+            f"""SELECT id, professor, university, location_city, location_country,
+                       fit_tier, phd_recommendation, final_score_phd,
+                       masters_recommendation, final_score_masters, status,
+                       email, homepage
+                FROM professors
+                WHERE LOWER(location_country) = LOWER(?) {hide_sql}
+                ORDER BY
+                  CASE
+                    WHEN phd_recommendation = 'MUST APPLY' THEN 1
+                    WHEN phd_recommendation = 'GOOD FIT' THEN 2
+                    WHEN masters_recommendation = 'MUST APPLY' THEN 3
+                    WHEN masters_recommendation = 'GOOD FIT' THEN 4
+                    ELSE 5
+                  END,
+                  final_score_phd DESC NULLS LAST""",
+            [name] + hide_params,
+        ).fetchall()
+        prog_rows = conn.execute(
+            f"""SELECT * FROM university_programs
+                WHERE LOWER(location_country) = LOWER(?) {hide_sql}
+                ORDER BY university, track""",
+            [name] + hide_params,
+        ).fetchall()
+    if not prof_rows and not prog_rows:
+        return None
+    return {
+        "country": name,
+        "iso": COUNTRY_ISO.get(name, ""),
+        "professors": [dict(r) for r in prof_rows],
+        "programs": [dict(r) for r in prog_rows],
+        "uni_count": len({(r["university"] or "").lower() for r in prog_rows}),
+    }
+
+
+def get_country_info(country: str) -> Optional[dict[str, Any]]:
+    """Researched visa/PR/funding notes for a country (country_info table)."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM country_info WHERE LOWER(country) = LOWER(?)", (country.strip(),)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_country_info(country: str, **fields: Any) -> None:
+    """Upsert visa/pr/funding research notes. Only known columns accepted."""
+    allowed = {"visa_summary", "pr_path", "funding_landscape", "sources", "notes"}
+    values = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    if not values:
+        return
+    values["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cols = ", ".join(values)
+    ph = ", ".join("?" for _ in values)
+    updates = ", ".join(f"{k} = excluded.{k}" for k in values)
+    with transaction(connect()) as conn:
+        conn.execute(
+            f"""INSERT INTO country_info (country, {cols})
+                VALUES (?, {ph})
+                ON CONFLICT(country) DO UPDATE SET {updates}""",
+            [country.strip(), *values.values()],
+        )
+
+# --- Applications tracker (own applications) ----------------------------------
+
+APPLICATION_EVENT_TYPES = (
+    "opens", "closes", "deadline", "interview", "decision", "results",
+    "scholarship", "recommendation_letters", "documents", "exam", "other",
+)
+
+# Reuse the positions application-status vocabulary; statuses that mean "this
+# application is dead or dead to me" get dimmed rows in the UI.
+APPLICATIONS_ACTIVE_TAXONOMY = [
+    "not_applied", "not_interested", "preparing_application", "applied",
+    "email_sent", "awaiting_response", "interview_scheduled",
+    "rejected", "offered", "withdrawn",
+]
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _new_id(prefix: str) -> str:
+    import uuid
+    return f"{prefix}-{uuid.uuid4().hex[:16]}"
+
+
+def get_applications() -> list[dict[str, Any]]:
+    """All own applications with linked professors and their events.
+
+    Each row: applications columns + professors (joined list) + events
+    (sorted: future by date asc, then past by date desc) + next_event
+    (earliest event today/future, else None).
+    """
+    with connect() as conn:
+        app_rows = conn.execute(
+            """SELECT a.*, up.track AS program_track,
+                      up.university AS program_university,
+                      up.program_name AS program_name
+               FROM applications a
+               LEFT JOIN university_programs up ON up.id = a.program_id
+               ORDER BY a.updated_at DESC"""
+        ).fetchall()
+        if not app_rows:
+            return []
+        prof_rows = conn.execute(
+            """SELECT DISTINCT ap.application_id, p.id, p.professor, p.university
+               FROM application_professors ap
+               JOIN professors p ON p.id = ap.professor_id
+               ORDER BY p.professor"""
+        ).fetchall()
+        event_rows = conn.execute(
+            "SELECT * FROM application_events ORDER BY event_date ASC"
+        ).fetchall()
+    profs_by_app: dict[str, list[dict[str, Any]]] = {}
+    for r in prof_rows:
+        profs_by_app.setdefault(r["application_id"], []).append(dict(r))
+    events_by_app: dict[str, list[dict[str, Any]]] = {}
+    for r in event_rows:
+        events_by_app.setdefault(r["application_id"], []).append(dict(r))
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    out = []
+    for a in app_rows:
+        d = dict(a)
+        d["professors"] = profs_by_app.get(d["id"], [])
+        events = events_by_app.get(d["id"], [])
+        future = sorted((e for e in events if (e["event_date"] or "") >= today),
+                        key=lambda e: e["event_date"] or "")
+        past = sorted((e for e in events if (e["event_date"] or "") < today),
+                      key=lambda e: e["event_date"] or "", reverse=True)
+        d["events"] = future + past
+        d["next_event"] = future[0] if future else None
+        out.append(d)
+    return out
+
+
+def get_application_professor_options(search: str = "") -> list[dict[str, Any]]:
+    """Lightweight professor list for the add-professor datalist.
+
+    Search narrows (used by the /applications/prof-search endpoint); empty
+    search returns all rec-graded professors. No LIMIT: 634 eligible rows,
+    the old LIMIT 400 silently hid half the alphabet.
+    """
+    hide_cond, hide_params = _hide_countries_sql()
+    where = [("(phd_recommendation IN ('MUST APPLY', 'GOOD FIT', 'MEDIUM FIT')"
+              " OR masters_recommendation IN ('MUST APPLY', 'GOOD FIT', 'MEDIUM FIT'))")]
+    if hide_cond:
+        where.append(hide_cond)
+    if search:
+        where.append("(professor LIKE ? OR university LIKE ?)")
+    cond = " AND ".join(where)
+    params: list[Any] = [*hide_params]
+    if search:
+        params += [f"%{search}%", f"%{search}%"]
+    with connect() as conn:
+        rows = conn.execute(
+            f"""SELECT id, professor, university FROM professors
+               WHERE {cond}
+               ORDER BY professor""",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_application(name: str, url: str = "", status: str = "not_applied",
+                       notes: str = "", program_id: str = "",
+                       semester: str = "") -> str:
+    if status not in APPLICATIONS_ACTIVE_TAXONOMY:
+        raise ValueError(f"invalid status: {status}")
+    now = _now_iso()
+    app_id = _new_id("app")
+    with transaction(connect()) as conn:
+        conn.execute(
+            """INSERT INTO applications (id, created_at, updated_at, name, url,
+                                         status, notes, program_id, semester)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (app_id, now, now, name.strip(), (url or "").strip() or None,
+             status, (notes or "").strip() or None,
+             (program_id or "").strip() or None, (semester or "").strip() or None),
+        )
+    return app_id
+
+
+def update_application(app_id: str, name: str, url: str = "",
+                       notes: str = "", program_id: str | None = None,
+                       semester: str | None = None) -> bool:
+    """Update core fields. program_id/semester None = leave unchanged."""
+    with connect() as conn:
+        sets = ["name = ?", "url = ?", "notes = ?", "updated_at = ?"]
+        params: list[Any] = [name.strip(), (url or "").strip() or None,
+                             (notes or "").strip() or None, _now_iso()]
+        if program_id is not None:
+            sets.append("program_id = ?")
+            params.append(program_id.strip() or None)
+        if semester is not None:
+            sets.append("semester = ?")
+            params.append(semester.strip() or None)
+        params.append(app_id)
+        with transaction(conn) as t:
+            cur = t.execute(
+                f"UPDATE applications SET {', '.join(sets)} WHERE id = ?", params)
+    return cur.rowcount > 0
+
+
+def get_program_picker_options() -> list[dict[str, Any]]:
+    """Programs for the application form dropdown (uni/track/name/country/url)."""
+    hide_cond, hide_params = _hide_countries_sql("up")
+    with connect() as conn:
+        rows = conn.execute(
+            f"""SELECT up.id, up.university, up.track, up.program_name,
+                       up.location_country, up.department_url
+                FROM university_programs up
+                {('WHERE ' + hide_cond) if hide_cond else ''}
+                ORDER BY up.university, up.track""",
+            hide_params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_semester_options(program_id: str) -> list[dict[str, Any]]:
+    """Distinct cycle labels (with date counts) for a program."""
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT cycle_label,
+                      MIN(deadline_date) AS first_date,
+                      COUNT(*) AS n_dates
+                 FROM program_deadlines
+                WHERE university_program_id = ?
+                  AND cycle_label IS NOT NULL AND cycle_label != ''
+                GROUP BY cycle_label
+                ORDER BY MIN(deadline_date) NULLS LAST""",
+            (program_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_program_autofill(program_id: str) -> Optional[dict[str, Any]]:
+    """Program URL + raw deadline rows (for event sync / preview)."""
+    with connect() as conn:
+        prog = conn.execute(
+            "SELECT id, university, program_name, department_url FROM university_programs WHERE id = ?",
+            (program_id,),
+        ).fetchone()
+        if not prog:
+            return None
+        deadlines = [dict(r) for r in conn.execute(
+            """SELECT deadline_type, deadline_date, cycle_label, description
+               FROM program_deadlines WHERE university_program_id = ?
+               ORDER BY deadline_date NULLS LAST""", (program_id,)).fetchall()]
+    d = dict(prog)
+    d["deadlines"] = deadlines
+    return d
+
+
+def sync_application_events(app_id: str, program_id: str,
+                            semester: str) -> int:
+    """Auto-create opens/closes events from program_deadlines for a
+    program+cycle. Skips type+date pairs already present. Returns added count."""
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT deadline_type, deadline_date, description
+               FROM program_deadlines
+               WHERE university_program_id = ? AND cycle_label = ?
+                 AND deadline_date IS NOT NULL""",
+            (program_id, semester),
+        ).fetchall()
+        existing = {(r["event_type"], r["event_date"])
+                    for r in conn.execute(
+            "SELECT event_type, event_date FROM application_events WHERE application_id = ?",
+            (app_id,)).fetchall()}
+    now = _now_iso()
+    added = 0
+    inserts = []
+    for r in rows:
+        dtype = (r["deadline_type"] or "").lower()
+        desc = (r["description"] or "").lower()
+        if "open" in dtype:
+            etype = "opens"
+        elif dtype in ("application_close", "application_window_close",
+                       "web_entry_close", "admission_period_end",
+                       "registration_close", "scholarship_close",
+                       "interview_end"):
+            etype = "closes"
+        elif dtype in ("application", "application_deadline", "deadline",
+                       "admission"):
+            # bare 'application' rows encode opens vs closes only in description
+            if "open" in desc and "clos" not in desc:
+                etype = "opens"
+            else:
+                etype = "closes"
+        elif dtype in ("notification", "decisions", "decision", "results",
+                       "results_stage1", "final_results", "reply", "admitted",
+                       "ranking", "scholarship_decision"):
+            etype = "results"
+        elif dtype in ("interview", "interview_start"):
+            etype = "interview"
+        elif dtype in ("scholarship", "scholarship_deadline", "scholarship_open",
+                       "scholarship_close", "funding", "funding_deadline"):
+            etype = "scholarship"
+        elif dtype in ("recommendation_letters", "recommendation_letter_deadline",
+                       "referee_deadline"):
+            etype = "recommendation_letters"
+        elif dtype in ("document_submission", "document_upload", "cas_request",
+                       "cas_last", "documents"):
+            etype = "documents"
+        elif dtype in ("examination", "entrance_exam", "exam"):
+            etype = "exam"
+        elif dtype in ("registration", "registration_deadline", "enrolment",
+                       "enrollment", "classes_begin", "program_start",
+                       "supervisor_list_finalized", "assignment_deadline",
+                       "application_status", "other"):
+            etype = "other"
+        else:
+            continue
+        date = r["deadline_date"][:10]
+        if (etype, date) in existing:
+            continue
+        existing.add((etype, date))
+        inserts.append((_new_id("evt"), app_id, etype, date,
+                        (r["description"] or "")[:200] or None, now))
+        added += 1
+    if inserts:
+        with transaction(connect()) as conn:
+            conn.executemany(
+                """INSERT INTO application_events
+                     (id, application_id, event_type, event_date, note, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""", inserts)
+    return added
+
+
+def update_application_status(app_id: str, status: str) -> bool:
+    if status not in APPLICATIONS_ACTIVE_TAXONOMY:
+        return False
+    with transaction(connect()) as conn:
+        cur = conn.execute(
+            "UPDATE applications SET status = ?, updated_at = ? WHERE id = ?",
+            (status, _now_iso(), app_id),
+        )
+    return cur.rowcount > 0
+
+
+def delete_application(app_id: str) -> bool:
+    with transaction(connect()) as conn:
+        conn.execute("DELETE FROM application_events WHERE application_id = ?", (app_id,))
+        conn.execute("DELETE FROM application_professors WHERE application_id = ?", (app_id,))
+        cur = conn.execute("DELETE FROM applications WHERE id = ?", (app_id,))
+    return cur.rowcount > 0
+
+
+def add_application_professor(app_id: str, professor_id: str) -> bool:
+    with connect() as conn:
+        ok_app = conn.execute(
+            "SELECT 1 FROM applications WHERE id = ?", (app_id,)
+        ).fetchone()
+        ok_prof = conn.execute(
+            "SELECT 1 FROM professors WHERE id = ?", (professor_id,)
+        ).fetchone()
+    if not (ok_app and ok_prof):
+        return False
+    with transaction(connect()) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO application_professors (application_id, professor_id) VALUES (?, ?)",
+            (app_id, professor_id),
+        )
+    return True
+
+
+def remove_application_professor(app_id: str, professor_id: str) -> bool:
+    with transaction(connect()) as conn:
+        cur = conn.execute(
+            "DELETE FROM application_professors WHERE application_id = ? AND professor_id = ?",
+            (app_id, professor_id),
+        )
+    return cur.rowcount > 0
+
+
+def add_application_event(app_id: str, event_type: str, event_date: str,
+                          note: str = "") -> bool:
+    if event_type not in APPLICATION_EVENT_TYPES:
+        return False
+    with transaction(connect()) as conn:
+        conn.execute(
+            """INSERT INTO application_events
+                 (id, application_id, event_type, event_date, note, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (_new_id("evt"), app_id, event_type, (event_date or "").strip() or None,
+             (note or "").strip() or None, _now_iso()),
+        )
+    return True
+
+
+def delete_application_event(app_id: str, event_id: str) -> bool:
+    with transaction(connect()) as conn:
+        cur = conn.execute(
+            "DELETE FROM application_events WHERE id = ? AND application_id = ?",
+            (event_id, app_id),
+        )
+    return cur.rowcount > 0
