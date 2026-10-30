@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "profdash"
-version = "0.1.0"
+version = "0.2.0"
 description = "Self-hosted professor outreach tracker for prospective CS grad students: CSRankings import, AI-assisted scoring, Gmail reply scanning, and a fast local dashboard."
 readme = "README.md"
 license = { text = "MIT" }

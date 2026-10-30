@@ -129,7 +129,10 @@ The server binds to `127.0.0.1` by default. For LAN access, systemd units and cr
 
 ## Status
 
-v0.1 — extracted and generalized from a personal pipeline that tracked a real application season. Expect rough edges; [issues](../../issues) welcome.
+v0.2 — applications tracker, university tier board, world map with country
+pages, view-level country filters, and the Gmail applications labeler. Built
+on v0.1, which extracted and generalized a personal pipeline that tracked a
+real application season. Expect rough edges; [issues](../../issues) welcome.
 
 ## License
 
